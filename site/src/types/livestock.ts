@@ -7,7 +7,14 @@
 export const SPECIES = ["cattle", "horse", "goat", "sheep"] as const;
 export type Species = (typeof SPECIES)[number];
 
-export const ANIMAL_STATUSES = ["active", "pending", "sold", "deceased"] as const;
+export const ANIMAL_STATUSES = [
+  "active",
+  "pending",
+  "sold",
+  "deceased",
+  "culled",
+  "archived",
+] as const;
 export type AnimalStatus = (typeof ANIMAL_STATUSES)[number];
 
 export const HEALTH_EVENT_TYPES = [
@@ -37,6 +44,7 @@ export type Animal = {
   sex: Sex | null;
   breed: string | null;
   birth_date: string | null; // YYYY-MM-DD
+  acquisition_date: string | null; // YYYY-MM-DD
   status: AnimalStatus;
   herd_group_id: number | null;
   herd_group_name: string | null;

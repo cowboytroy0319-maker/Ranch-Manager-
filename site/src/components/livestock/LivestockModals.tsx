@@ -100,6 +100,8 @@ const statusTone: Record<string, "green" | "amber" | "stone" | "red"> = {
   pending: "amber",
   sold: "stone",
   deceased: "red",
+  culled: "stone",
+  archived: "stone",
 };
 
 // ---------------------------------------------------------------------------
@@ -127,6 +129,7 @@ export function AnimalFormModal({
     sex: editing?.sex ?? "",
     breed: editing?.breed ?? "",
     birth_date: editing?.birth_date ?? "",
+    acquisition_date: editing?.acquisition_date ?? "",
     status: editing?.status ?? "active",
     herd_group_id: editing?.herd_group_id ?? null,
     pasture: editing?.pasture ?? "",
@@ -175,11 +178,11 @@ export function AnimalFormModal({
               ))}
             </select>
           </Field>
-          <Field label="Name *">
-            <input className={inputCls} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Belle / SV-104" required />
+          <Field label="Name">
+            <input className={inputCls} value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Cowboy (optional)" />
           </Field>
-          <Field label="Ear tag">
-            <input className={inputCls} value={form.tag_number ?? ""} onChange={(e) => set("tag_number", e.target.value)} placeholder="SV-101" />
+          <Field label="Ear tag *">
+            <input className={inputCls} value={form.tag_number ?? ""} onChange={(e) => set("tag_number", e.target.value)} placeholder="SV-101" required />
           </Field>
           <Field label="Sex">
             <select className={inputCls} value={form.sex ?? ""} onChange={(e) => set("sex", e.target.value)}>
@@ -194,6 +197,9 @@ export function AnimalFormModal({
           </Field>
           <Field label="Birth date">
             <input type="date" className={inputCls} value={form.birth_date ?? ""} onChange={(e) => set("birth_date", e.target.value)} />
+          </Field>
+          <Field label="Acquisition date">
+            <input type="date" className={inputCls} value={form.acquisition_date ?? ""} onChange={(e) => set("acquisition_date", e.target.value)} />
           </Field>
           <Field label="Pasture">
             <input
@@ -368,6 +374,7 @@ export function AnimalDetailModal({
 
       <div className="mb-4 grid grid-cols-2 gap-x-6 gap-y-3 rounded-xl bg-stone-50 p-4 text-sm sm:grid-cols-3">
         <div><span className="text-stone-500">Birth date</span><p className="font-medium text-stone-800">{animal.birth_date ? `${animal.birth_date} (${ageLabel(animal.birth_date)})` : "—"}</p></div>
+        <div><span className="text-stone-500">Acquired</span><p className="font-medium text-stone-800">{animal.acquisition_date ?? "—"}</p></div>
         <div><span className="text-stone-500">Herd group</span><p className="font-medium text-stone-800">{animal.herd_group_name ?? "—"}</p></div>
         <div><span className="text-stone-500">Pasture</span><p className="font-medium text-stone-800">{animal.pasture ?? "—"}</p></div>
         {animal.notes && (

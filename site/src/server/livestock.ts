@@ -30,6 +30,7 @@ export const getLivestockData = createServerFn().handler(async (): Promise<Lives
       db`
         SELECT a.id, a.species, a.name, a.tag_number, a.sex, a.breed,
                to_char(a.birth_date, 'YYYY-MM-DD') AS birth_date,
+               to_char(a.acquisition_date, 'YYYY-MM-DD') AS acquisition_date,
                a.status, a.herd_group_id, g.name AS herd_group_name,
                a.pasture, a.notes,
                a.created_at::text AS created_at, a.updated_at::text AS updated_at
@@ -93,10 +94,11 @@ export type AnimalInput = {
   id?: number;
   species: string;
   name: string;
-  tag_number: string | null;
+  tag_number: string;
   sex: string | null;
   breed: string | null;
   birth_date: string | null;
+  acquisition_date: string | null;
   status: string;
   herd_group_id: number | null;
   pasture: string | null;
@@ -115,27 +117,46 @@ export type HealthEventInput = {
   next_due: string | null;
 };
 
-function parseAnimalInput(raw: unknown): AnimalInput {
+export function parseAnimalInput(raw: unknown): AnimalInput {
   const d = (raw ?? {}) as Record<string, unknown>;
   const species = oneOf(d.species, SPECIES);
-  const name = str(d.name);
+  const tag_number = str(d.tag_number);
   if (!species) throw new Error("Pick a species (cattle, horse, goat, or sheep).");
-  if (!name) throw new Error("Name or tag is required.");
+  if (!tag_number) throw new Error("Tag/animal ID is required.");
+  // Name is optional: when absent, the tag doubles as the display name so
+  // lists/detail stay consistent with a single source of truth (the row).
+  const name = str(d.name) ?? tag_number;
   const id = optionalInt(d.id);
   const herd_group_id = optionalInt(d.herd_group_id);
   return {
     id: id === null ? undefined : id,
     species,
     name,
-    tag_number: str(d.tag_number),
+    tag_number,
     sex: oneOf(d.sex, SEXES),
     breed: str(d.breed),
     birth_date: isoDate(d.birth_date),
+    acquisition_date: isoDate(d.acquisition_date),
     status: oneOf(d.status, ANIMAL_STATUSES) ?? "active",
     herd_group_id,
     pasture: str(d.pasture),
     notes: str(d.notes),
   };
+}
+
+/**
+ * Pure duplicate-tag check over rows already loaded from the database.
+ * Returns true when another animal owns the same tag — ignoring the row
+ * being edited (currentId). Shared by saveAnimal and the unit tests.
+ */
+export function findTagCollision(
+  rows: { id: number; tag_number: string | null }[],
+  tag: string,
+  currentId?: number
+): boolean {
+  const t = tag.trim();
+  if (!t) return false;
+  return rows.some((r) => r.tag_number === t && r.id !== currentId);
 }
 
 function parseHealthEventInput(raw: unknown): HealthEventInput {
@@ -167,26 +188,45 @@ export const saveAnimal = createServerFn({ method: "POST" })
   .validator(parseAnimalInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    const a = data;
+    const tag = a.tag_number.trim();
     try {
       const db = sql();
-      const a = data;
       if (a.id) {
+        // Reject if another animal already owns this tag (exclude this row).
+        const dups = await db<{ id: number; tag_number: string | null }[]>`
+          SELECT id, tag_number FROM animals WHERE tag_number = ${tag}`;
+        if (findTagCollision(dups, tag, a.id)) {
+          return { ok: false, error: `Tag '${tag}' already exists — tags must be unique.` };
+        }
         const updated = await db`
           UPDATE animals SET species=${a.species}, name=${a.name}, tag_number=${a.tag_number},
-            sex=${a.sex}, breed=${a.breed}, birth_date=${a.birth_date}, status=${a.status},
+            sex=${a.sex}, breed=${a.breed}, birth_date=${a.birth_date},
+            acquisition_date=${a.acquisition_date}, status=${a.status},
             herd_group_id=${a.herd_group_id}, pasture=${a.pasture}, notes=${a.notes}, updated_at=now()
           WHERE id=${a.id} RETURNING id`;
         if (updated.length === 0) return { ok: false, error: `Animal #${a.id} no longer exists.` };
         return { ok: true, id: a.id };
       }
+      // Insert path: same check first (also excluding nothing — brand-new row).
+      const dups = await db<{ id: number; tag_number: string | null }[]>`
+        SELECT id, tag_number FROM animals WHERE tag_number = ${tag}`;
+      if (findTagCollision(dups, tag, a.id)) {
+        return { ok: false, error: `Tag '${tag}' already exists — tags must be unique.` };
+      }
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO animals (species, name, tag_number, sex, breed, birth_date, status, herd_group_id, pasture, notes)
+        INSERT INTO animals (species, name, tag_number, sex, breed, birth_date, acquisition_date, status, herd_group_id, pasture, notes)
         VALUES (${a.species}, ${a.name}, ${a.tag_number}, ${a.sex}, ${a.breed}, ${a.birth_date},
-                ${a.status}, ${a.herd_group_id}, ${a.pasture}, ${a.notes})
+                ${a.acquisition_date}, ${a.status}, ${a.herd_group_id}, ${a.pasture}, ${a.notes})
         RETURNING id`;
       return { ok: true, id: row.id };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      const msg = err instanceof Error ? err.message : String(err);
+      // Backstop for the DB unique index (race between check + insert).
+      if (/animals_tag_number_uniq|duplicate/i.test(msg)) {
+        return { ok: false, error: `Tag '${tag}' already exists — tags must be unique.` };
+      }
+      return { ok: false, error: msg };
     }
   });
 

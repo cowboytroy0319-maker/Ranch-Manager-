@@ -9,9 +9,12 @@ import {
 } from "~/components/livestock/LivestockModals";
 import { getLivestockData } from "~/server/livestock";
 import {
+  ANIMAL_STATUSES,
+  SEXES,
   SPECIES,
   UPCOMING_WINDOW_DAYS,
   type Animal,
+  type Sex,
   type Species,
 } from "~/types/livestock";
 
@@ -32,6 +35,8 @@ const statusTone: Record<string, "green" | "amber" | "stone" | "red"> = {
   pending: "amber",
   sold: "stone",
   deceased: "red",
+  culled: "stone",
+  archived: "stone",
 };
 
 const typeTone: Record<string, "green" | "amber" | "blue" | "red" | "stone"> = {
@@ -49,6 +54,9 @@ function LivestockPage() {
 
   const [speciesFilter, setSpeciesFilter] = useState<Species | "all">("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sexFilter, setSexFilter] = useState<Sex | "all">("all");
+  const [breedFilter, setBreedFilter] = useState<string>("all");
+  const [pastureFilter, setPastureFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [detailId, setDetailId] = useState<number | null>(null);
   const [editing, setEditing] = useState<Animal | null>(null);
@@ -77,16 +85,24 @@ function LivestockPage() {
     [data.animals]
   );
 
+  const breeds = useMemo(
+    () => [...new Set(data.animals.map((a) => a.breed).filter((b): b is string => Boolean(b)))].sort(),
+    [data.animals]
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return data.animals.filter((a) => {
       if (speciesFilter !== "all" && a.species !== speciesFilter) return false;
       if (statusFilter !== "all" && a.status !== statusFilter) return false;
+      if (sexFilter !== "all" && a.sex !== sexFilter) return false;
+      if (breedFilter !== "all" && a.breed !== breedFilter) return false;
+      if (pastureFilter !== "all" && a.pasture !== pastureFilter) return false;
       if (!q) return true;
-      return [a.name, a.tag_number, a.breed, a.pasture, a.notes, a.herd_group_name]
+      return [a.name, a.tag_number, String(a.id), a.breed, a.pasture, a.notes, a.herd_group_name]
         .some((v) => v && v.toLowerCase().includes(q));
     });
-  }, [data.animals, speciesFilter, statusFilter, query]);
+  }, [data.animals, speciesFilter, statusFilter, sexFilter, breedFilter, pastureFilter, query]);
 
   const upcoming = useMemo(() => {
     const cutoff = new Date(Date.now() + UPCOMING_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
@@ -212,7 +228,7 @@ function LivestockPage() {
         <Card>
           <CardTitle title="Herd status" sub="All records by status" />
           <div className="space-y-3">
-            {(["active", "pending", "sold", "deceased"] as const).map((s) => (
+            {ANIMAL_STATUSES.map((s) => (
               <div key={s} className="flex items-center justify-between gap-3">
                 <Badge tone={statusTone[s]}>{s[0].toUpperCase() + s.slice(1)}</Badge>
                 <span className="text-sm font-semibold text-stone-700">{counts.status[s] ?? 0}</span>
@@ -240,21 +256,51 @@ function LivestockPage() {
               />
             ))}
           </div>
-          <div className="ml-auto flex flex-1 flex-wrap items-center justify-end gap-2">
+          <div className="ml-auto flex flex-1 flex-wrap items-center gap-2">
             <input
               className="w-full max-w-56 rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none transition focus:border-green-700 focus:ring-2 focus:ring-green-700/20 sm:w-56"
-              placeholder="Search name, tag, breed…"
+              placeholder="Search name, tag, ID…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
             <select
-              className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-700 outline-none transition focus:border-green-700"
+              className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-700 outline-none transition focus:border-green-700 sm:w-auto"
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
             >
               <option value="all">All statuses</option>
-              {["active", "pending", "sold", "deceased"].map((s) => (
+              {ANIMAL_STATUSES.map((s) => (
                 <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>
+              ))}
+            </select>
+            <select
+              className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-700 outline-none transition focus:border-green-700 sm:w-auto"
+              value={sexFilter}
+              onChange={(e) => setSexFilter(e.target.value as Sex | "all")}
+            >
+              <option value="all">All sexes</option>
+              {SEXES.map((s) => (
+                <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>
+              ))}
+            </select>
+            <select
+              className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-700 outline-none transition focus:border-green-700 sm:w-auto"
+              value={breedFilter}
+              onChange={(e) => setBreedFilter(e.target.value)}
+            >
+              <option value="all">All breeds</option>
+              {breeds.map((b) => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
+            <select
+              className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-700 outline-none transition focus:border-green-700 sm:w-auto"
+              value={pastureFilter}
+              onChange={(e) => setPastureFilter(e.target.value)}
+            >
+              <option value="all">All locations</option>
+              {pastures.map((p) => (
+                <option key={p} value={p}>{p}</option>
               ))}
             </select>
             <button onClick={() => setAddOpen(true)} className="btn-primary !px-4 !py-2 text-sm">
@@ -287,7 +333,7 @@ function LivestockPage() {
                   <tr
                     key={a.id}
                     onClick={() => setDetailId(a.id)}
-                    className="cursor-pointer transition hover:bg-green-50/50"
+                    className={`cursor-pointer transition hover:bg-green-50/50 ${a.status === "active" ? "" : "opacity-60"}`}
                   >
                     <td className="py-2.5 pr-3">
                       <span className="font-semibold text-stone-900">{a.name}</span>
