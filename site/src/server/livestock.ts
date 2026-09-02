@@ -20,6 +20,17 @@ import {
 // Read: everything the module needs in one round trip
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve the operation/ranch this deployment runs as. The app is
+ * single-operation today (no auth layer), so the single `operations` row is
+ * the implicit ranch scope. Returns null when the database is unreachable or
+ * no operation row exists yet (migration 0013 always seeds one).
+ */
+export async function currentRanchId(db: ReturnType<typeof sql>): Promise<number | null> {
+  const rows = await db<[{ id: number }]>`SELECT id FROM operations ORDER BY id LIMIT 1`;
+  return rows.length ? rows[0].id : null;
+}
+
 export const getLivestockData = createServerFn().handler(async (): Promise<LivestockData> => {
   if (!isDatabaseConfigured()) {
     return { configured: false, animals: [], groups: [], events: [] };
@@ -28,7 +39,7 @@ export const getLivestockData = createServerFn().handler(async (): Promise<Lives
     const db = sql();
     const [animalRows, groupRows, eventRows] = await Promise.all([
       db`
-        SELECT a.id, a.species, a.name, a.tag_number, a.sex, a.breed,
+        SELECT a.id, a.species, a.name, a.tag_number, a.ranch_id, a.sex, a.breed,
                to_char(a.birth_date, 'YYYY-MM-DD') AS birth_date,
                to_char(a.acquisition_date, 'YYYY-MM-DD') AS acquisition_date,
                a.status, a.herd_group_id, g.name AS herd_group_name,
@@ -145,18 +156,35 @@ export function parseAnimalInput(raw: unknown): AnimalInput {
 }
 
 /**
- * Pure duplicate-tag check over rows already loaded from the database.
- * Returns true when another animal owns the same tag — ignoring the row
- * being edited (currentId). Shared by saveAnimal and the unit tests.
+ * Pure duplicate-tag check over rows already loaded from the database, scoped
+ * to the ranch/operation: a tag only collides with a DIFFERENT animal that
+ * carries the same tag IN THE SAME RANCH. Rows with a different ranch_id (or
+ * no ranch_id) never collide, so two operations may use the same tag. The row
+ * being edited is ignored via `currentRanchId`-matching ranch_id + same id.
+ * Shared by saveAnimal and the unit tests.
  */
+export type TagRow = { id: number; tag_number: string | null; ranch_id?: number | null };
+
 export function findTagCollision(
-  rows: { id: number; tag_number: string | null }[],
+  rows: TagRow[],
   tag: string,
-  currentId?: number
+  currentId?: number,
+  ranchId?: number | null
 ): boolean {
   const t = tag.trim();
   if (!t) return false;
-  return rows.some((r) => r.tag_number === t && r.id !== currentId);
+  return rows.some(
+    (r) =>
+      r.tag_number === t &&
+      // The animal being edited keeps its own tag (edit path).
+      r.id !== currentId &&
+      // Same tag in the same ranch only. Rows that lack a ranch_id (pre-0013
+      // fixtures) are treated as unknown-scope and skipped, keeping the pure
+      // function conservative: it never blocks on an ambiguous row.
+      r.ranch_id !== undefined &&
+      r.ranch_id !== null &&
+      r.ranch_id === ranchId
+  );
 }
 
 function parseHealthEventInput(raw: unknown): HealthEventInput {
@@ -192,39 +220,47 @@ export const saveAnimal = createServerFn({ method: "POST" })
     const tag = a.tag_number.trim();
     try {
       const db = sql();
+      // This deployment is one operation: the ranch scope is the single
+      // operation row (README / migration 0013). No auth layer exists — do
+      // not invent one; ranch_id is simply resolved and enforced here.
+      const ranchId = await currentRanchId(db);
+      if (ranchId === null) return { ok: false, error: "No operation (ranch) is set up yet." };
       if (a.id) {
-        // Reject if another animal already owns this tag (exclude this row).
-        const dups = await db<{ id: number; tag_number: string | null }[]>`
-          SELECT id, tag_number FROM animals WHERE tag_number = ${tag}`;
-        if (findTagCollision(dups, tag, a.id)) {
-          return { ok: false, error: `Tag '${tag}' already exists — tags must be unique.` };
+        // Reject if another animal in THIS ranch already owns this tag
+        // (exclude the row being edited; never touch an animal's ranch_id).
+        const dups = await db<{ id: number; tag_number: string | null; ranch_id: number | null }[]>`
+          SELECT id, tag_number, ranch_id FROM animals WHERE tag_number = ${tag} AND ranch_id = ${ranchId}`;
+        if (findTagCollision(dups, tag, a.id, ranchId)) {
+          return { ok: false, error: `Tag '${tag}' already exists in this ranch — tags must be unique.` };
         }
         const updated = await db`
           UPDATE animals SET species=${a.species}, name=${a.name}, tag_number=${a.tag_number},
             sex=${a.sex}, breed=${a.breed}, birth_date=${a.birth_date},
             acquisition_date=${a.acquisition_date}, status=${a.status},
             herd_group_id=${a.herd_group_id}, pasture=${a.pasture}, notes=${a.notes}, updated_at=now()
-          WHERE id=${a.id} RETURNING id`;
-        if (updated.length === 0) return { ok: false, error: `Animal #${a.id} no longer exists.` };
+          WHERE id=${a.id} AND ranch_id=${ranchId} RETURNING id`;
+        if (updated.length === 0) return { ok: false, error: `Animal #${a.id} no longer exists in this ranch.` };
         return { ok: true, id: a.id };
       }
-      // Insert path: same check first (also excluding nothing — brand-new row).
-      const dups = await db<{ id: number; tag_number: string | null }[]>`
-        SELECT id, tag_number FROM animals WHERE tag_number = ${tag}`;
-      if (findTagCollision(dups, tag, a.id)) {
-        return { ok: false, error: `Tag '${tag}' already exists — tags must be unique.` };
+      // Insert path: same ranch-scoped check first (brand-new row — nothing
+      // excluded). ranch_id is the current operation so new animals always
+      // land in this ranch.
+      const dups = await db<{ id: number; tag_number: string | null; ranch_id: number | null }[]>`
+        SELECT id, tag_number, ranch_id FROM animals WHERE tag_number = ${tag} AND ranch_id = ${ranchId}`;
+      if (findTagCollision(dups, tag, a.id, ranchId)) {
+        return { ok: false, error: `Tag '${tag}' already exists in this ranch — tags must be unique.` };
       }
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO animals (species, name, tag_number, sex, breed, birth_date, acquisition_date, status, herd_group_id, pasture, notes)
+        INSERT INTO animals (species, name, tag_number, sex, breed, birth_date, acquisition_date, status, herd_group_id, pasture, notes, ranch_id)
         VALUES (${a.species}, ${a.name}, ${a.tag_number}, ${a.sex}, ${a.breed}, ${a.birth_date},
-                ${a.acquisition_date}, ${a.status}, ${a.herd_group_id}, ${a.pasture}, ${a.notes})
+                ${a.acquisition_date}, ${a.status}, ${a.herd_group_id}, ${a.pasture}, ${a.notes}, ${ranchId})
         RETURNING id`;
       return { ok: true, id: row.id };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // Backstop for the DB unique index (race between check + insert).
-      if (/animals_tag_number_uniq|duplicate/i.test(msg)) {
-        return { ok: false, error: `Tag '${tag}' already exists — tags must be unique.` };
+      if (/animals_ranch_tag_uniq|duplicate/i.test(msg)) {
+        return { ok: false, error: `Tag '${tag}' already exists in this ranch — tags must be unique.` };
       }
       return { ok: false, error: msg };
     }

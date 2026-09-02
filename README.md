@@ -48,7 +48,7 @@ Production (self-host): `bun run build && bun run start` (serves via `serve.ts`)
 - `/` — marketing landing page + **lead-magnet signup** (free worksheet in exchange for email; stores opted-in contacts in `subscribers`)
 - `/demo` — interactive full-feature demo (9 modules) with sample data
 - `/dashboard` — **Daily Operations** view ("What do I need to do today?"): livestock health, pasture moves, hay/feed, maintenance due, renewals
-- `/livestock` — herd snapshot by species, per-animal view, horse energy/feed calculator (Mcal/day from body weight + workload); required unique ear tags, acquisition dates, culled/archived history, sex/breed/location filters
+- `/livestock` — herd snapshot by species, per-animal view, horse energy/feed calculator (Mcal/day from body weight + workload); required ear tags (unique **within the operation/ranch**, not globally), acquisition dates, culled/archived history, sex/breed/location filters
 - `/feed` — hay & feed inventory (bales/types, feed stores, usage log)
 - `/pasture` — pastures, grazing log, forage intelligence + regional recommendations (rotational vs continuous vs feedlot; cattle/horses/goats/sheep)
 - `/equipment` — equipment, maintenance records ("mark done" workflow), fuel log
@@ -72,7 +72,7 @@ Production (self-host): `bun run build && bun run start` (serves via `serve.ts`)
 
 ## Database schema (`db/migrations/`, idempotent)
 
-20 tables across 12 migrations: `herd_groups`, `animals`, `health_events`, `hay_inventory`, `feed_inventory`, `usage_log`, `pastures`, `pasture_assignments`, `grazing_log`, `pasture_observations`, `equipment`, `maintenance_records`, `fuel_log`, `subscription_events`, `app_settings`, `expenses`, `page_views`, `subscribers`, `employees`, `tax_exemptions`.
+21 tables across 13 migrations: `operations`, `herd_groups`, `animals`, `health_events`, `hay_inventory`, `feed_inventory`, `usage_log`, `pastures`, `pasture_assignments`, `grazing_log`, `pasture_observations`, `equipment`, `maintenance_records`, `fuel_log`, `subscription_events`, `app_settings`, `expenses`, `page_views`, `subscribers`, `employees`, `tax_exemptions`.
 
 Important: `0006_app_settings.sql` seeds a `stripe_webhook_secret` row — in this repository the value is a **placeholder** (`whsec_REPLACE_ME_EXAMPLE_ONLY`). Supply your real secret via the `STRIPE_WEBHOOK_SECRET` env var (the webhook handler reads env first, then the DB row as a fallback). The live production database already holds the correct value; fresh installs must set the env var or update the row.
 

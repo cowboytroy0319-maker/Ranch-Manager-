@@ -41,6 +41,10 @@ export type Animal = {
   species: Species;
   name: string;
   tag_number: string | null;
+  /** The ranch/operation this animal belongs to (scoping key for tag
+   * uniqueness and, later, multi-ranch accounting). NULL only in the
+   * no-DB/unconfigured state — the server always writes it. */
+  ranch_id: number | null;
   sex: Sex | null;
   breed: string | null;
   birth_date: string | null; // YYYY-MM-DD

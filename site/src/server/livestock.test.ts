@@ -1,6 +1,7 @@
 // ============================================================================
 // Ranch Manager Pro — Livestock server pure-logic unit tests (bun test)
-// Exercises the validators + duplicate-tag guard without touching a database.
+// Exercises the validators + ranch-scoped duplicate-tag guard without touching
+// a database (uniqueness is per operation/ranch, never global).
 //   bun test src/server/livestock.test.ts
 // ============================================================================
 import { describe, expect, test } from "bun:test";
@@ -44,32 +45,53 @@ describe("parseAnimalInput — tag required, name optional", () => {
   });
 });
 
-describe("findTagCollision — duplicate-tag detection", () => {
+describe("findTagCollision — duplicate-tag detection, scoped to ranch", () => {
+  const ranchA = 1;
+  const ranchB = 2;
   const rows = [
-    { id: 1, tag_number: "SV-101" },
-    { id: 2, tag_number: "SV-102" },
-    { id: 3, tag_number: null },
+    { id: 1, tag_number: "SV-101", ranch_id: ranchA },
+    { id: 2, tag_number: "SV-102", ranch_id: ranchA },
+    { id: 3, tag_number: null, ranch_id: ranchA },
+    { id: 4, tag_number: "SV-101", ranch_id: ranchB }, // same tag, other ranch
   ];
 
-  test("same tag on a different id is a collision", () => {
-    expect(findTagCollision(rows, "SV-101", 7)).toBe(true);
+  test("same tag on a different id in the same ranch is a collision", () => {
+    expect(findTagCollision(rows, "SV-101", 7, ranchA)).toBe(true);
+  });
+
+  test("same tag in a DIFFERENT ranch is NOT a collision", () => {
+    // SV-102 belongs to ranch A (row 2); an animal in ranch B may use it
+    // freely — uniqueness is per-ranch.
+    expect(findTagCollision(rows, "SV-102", 7, ranchB)).toBe(false);
+    // The same tag inside ranch A still collides (row 2 is another animal).
+    expect(findTagCollision(rows, "SV-102", 7, ranchA)).toBe(true);
   });
 
   test("same tag on the animal's own id is not a collision (edit path)", () => {
-    expect(findTagCollision(rows, "SV-101", 1)).toBe(false);
+    expect(findTagCollision(rows, "SV-101", 1, ranchA)).toBe(false);
+    expect(findTagCollision(rows, "SV-102", 2, ranchA)).toBe(false);
   });
 
   test("trimming: padded input still matches", () => {
-    expect(findTagCollision(rows, "  SV-101  ", 7)).toBe(true);
+    expect(findTagCollision(rows, "  SV-101  ", 7, ranchA)).toBe(true);
   });
 
   test("blank tag never collides (legacy NULL/empty rows stay allowed)", () => {
-    expect(findTagCollision(rows, "  ", 7)).toBe(false);
-    expect(findTagCollision(rows, "", 7)).toBe(false);
+    expect(findTagCollision(rows, "  ", 7, ranchA)).toBe(false);
+    expect(findTagCollision(rows, "", 7, ranchA)).toBe(false);
+  });
+
+  test("rows without a ranch_id never collide (pre-0013 fixtures)", () => {
+    const legacy = [
+      { id: 5, tag_number: "SV-101" },
+      { id: 6, tag_number: "SV-101" },
+    ];
+    expect(findTagCollision(legacy, "SV-101", 7, ranchA)).toBe(false);
+    expect(findTagCollision(legacy, "SV-101", 7)).toBe(false);
   });
 
   test("no match returns false", () => {
-    expect(findTagCollision(rows, "G-201", 7)).toBe(false);
+    expect(findTagCollision(rows, "G-201", 7, ranchA)).toBe(false);
   });
 });
 

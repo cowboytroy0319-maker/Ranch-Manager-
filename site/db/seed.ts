@@ -743,14 +743,20 @@ async function seed(): Promise<void> {
   // ---- Animals (0001) ----
   const idByTag = new Map<string, number>();
   const animalIds: number[] = [];
+  // Migration 0013 requires a ranch/operation on every animal. The seed backs
+  // its rows onto the default operation — the single-tenant scope today.
+  const [ranchRow] = await db<[{ id: number }]>`
+    SELECT id FROM operations ORDER BY id LIMIT 1`;
+  if (!ranchRow) throw new Error("seed requires an operations row (run migrations first)");
+  const ranchId = ranchRow.id;
   for (const a of ANIMALS) {
     let id = await findId(db, "animals", "tag_number", a.tag_number!);
     if (id == null) {
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO animals (species, name, tag_number, sex, breed, birth_date, status, herd_group_id, pasture, notes)
+        INSERT INTO animals (species, name, tag_number, sex, breed, birth_date, status, herd_group_id, pasture, notes, ranch_id)
         VALUES (${a.species}, ${a.name}, ${a.tag_number ?? null}, ${a.sex ?? null}, ${a.breed ?? null},
                 ${a.birth_date ?? null}, ${a.status ?? "active"}, ${a.group !== undefined ? groupIds[a.group] : null},
-                ${a.pasture ?? null}, ${a.notes ?? null})
+                ${a.pasture ?? null}, ${a.notes ?? null}, ${ranchId})
         RETURNING id`;
       id = row.id;
     }
