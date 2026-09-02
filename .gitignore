@@ -40,3 +40,5 @@ subscriber-announcement-draft.md
 qa/*.png
 qa/*.txt
 qa/*.js
+# Local export artifact
+*.zip
