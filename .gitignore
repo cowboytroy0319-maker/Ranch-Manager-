@@ -1,0 +1,42 @@
+# ── Dependencies ────────────────────────────────────────────────
+node_modules/
+
+# ── Local agent / machine state ─────────────────────────────────
+.local/
+
+# ── Environment & secrets — NEVER commit real values ────────────
+.env
+.env.*
+!.env.example
+
+# ── Build output & caches ───────────────────────────────────────
+dist/
+dist-ssr/
+build/
+.vite/
+.cache/
+coverage/
+.output/
+.nitro/
+.vercel/
+
+# ── Generated files ─────────────────────────────────────────────
+.tanstack/
+src/routeTree.gen.ts
+
+# ── Logs & runtime ──────────────────────────────────────────────
+*.log
+nohup.out
+.run/
+
+# ── OS ──────────────────────────────────────────────────────────
+.DS_Store
+
+# ── Internal team material (not product source; may contain
+#    private contacts, outreach strategy, tooling prompts) ───────
+growth/
+skills/
+subscriber-announcement-draft.md
+qa/*.png
+qa/*.txt
+qa/*.js

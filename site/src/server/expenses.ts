@@ -1,0 +1,110 @@
+// ============================================================================
+// Ranch Manager Pro — Expenses server function (the only place that talks to
+// the database for expense data). Reads the current-month cost ledger the
+// CostsSnapshot + /expenses route render. Fuel is intentionally NOT read here —
+// it stays sourced from `fuel_log` via getCostData so nothing is double-counted.
+// Maintenance spend is read from expenses.category='maintenance' (the ledger),
+// NOT from maintenance_records, so the dashboard shows one maintenance figure.
+// ============================================================================
+import { createServerFn } from "@tanstack/react-start";
+import { isDatabaseConfigured, sql } from "~/db";
+import type { DimensionTotal, ExpenseData, ExpenseRow } from "~/types/expenses";
+
+// Current-month scope: every aggregate and row below filters to the month the
+// DB clock says it currently is, so the dashboard always shows this month.
+const THIS_MONTH = "e.expense_date >= date_trunc('month', now())::date";
+
+export const getExpensesData = createServerFn().handler(async (): Promise<ExpenseData> => {
+  if (!isDatabaseConfigured()) {
+    return {
+      configured: false,
+      month: "",
+      totalCents: 0,
+      totalEntries: 0,
+      byCategory: [],
+      byHerd: [],
+      byPasture: [],
+      byEquipment: [],
+      byJob: [],
+      rows: [],
+    };
+  }
+  try {
+    const db = sql();
+    const monthRow = await db`select to_char(date_trunc('month', now()), 'YYYY-MM') as m`;
+    const month = monthRow[0]?.m ?? new Date().toISOString().slice(0, 7);
+    const [rows, cat, herd, pasture, equipment, job, grand] = await Promise.all([
+      db<ExpenseRow[]>`
+        SELECT e.id, e.expense_date::text AS expense_date, e.category, e.amount_cents,
+               e.vendor, e.herd_group_id, hg.name AS herd_group_name, hg.species,
+               e.pasture_id, p.name AS pasture_name, e.equipment_id, eq.name AS equipment_name,
+               e.job, e.notes
+        FROM expenses e
+        LEFT JOIN herd_groups hg ON hg.id = e.herd_group_id
+        LEFT JOIN pastures p ON p.id = e.pasture_id
+        LEFT JOIN equipment eq ON eq.id = e.equipment_id
+        WHERE ${db.unsafe(THIS_MONTH)}
+        ORDER BY e.expense_date, e.id`,
+      db<{ category: ExpenseRow["category"]; amount_cents: number; entries: number }[]>`
+        SELECT category, SUM(amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
+        FROM expenses
+        WHERE expense_date >= date_trunc('month', now())::date
+        GROUP BY category ORDER BY amount_cents DESC`,
+      db<DimensionTotal[]>`
+        SELECT coalesce(hg.name, 'Unallocated') AS name,
+               coalesce(hg.species, 'none') AS species,
+               SUM(e.amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
+        FROM expenses e LEFT JOIN herd_groups hg ON hg.id = e.herd_group_id
+        WHERE ${db.unsafe(THIS_MONTH)}
+        GROUP BY 1, 2 ORDER BY amount_cents DESC`,
+      db<DimensionTotal[]>`
+        SELECT coalesce(p.name, 'Unallocated') AS name,
+               SUM(e.amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
+        FROM expenses e LEFT JOIN pastures p ON p.id = e.pasture_id
+        WHERE ${db.unsafe(THIS_MONTH)}
+        GROUP BY 1 ORDER BY amount_cents DESC`,
+      db<DimensionTotal[]>`
+        SELECT coalesce(eq.name, 'Unallocated') AS name,
+               SUM(e.amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
+        FROM expenses e LEFT JOIN equipment eq ON eq.id = e.equipment_id
+        WHERE ${db.unsafe(THIS_MONTH)}
+        GROUP BY 1 ORDER BY amount_cents DESC`,
+      db<DimensionTotal[]>`
+        SELECT coalesce(e.job, 'Unallocated') AS name,
+               SUM(e.amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
+        FROM expenses e
+        WHERE ${db.unsafe(THIS_MONTH)}
+        GROUP BY 1 ORDER BY amount_cents DESC`,
+      db<{ total_cents: number; total_entries: number }[]>`
+        SELECT coalesce(SUM(amount_cents), 0)::int AS total_cents, COUNT(*)::int AS total_entries
+        FROM expenses WHERE expense_date >= date_trunc('month', now())::date`,
+    ]);
+    const g = grand[0];
+    return {
+      configured: true,
+      month,
+      totalCents: g?.total_cents ?? 0,
+      totalEntries: g?.total_entries ?? 0,
+      byCategory: cat as unknown as ExpenseData["byCategory"],
+      byHerd: herd,
+      byPasture: pasture,
+      byEquipment: equipment,
+      byJob: job,
+      rows,
+    };
+  } catch (err) {
+    return {
+      configured: true,
+      error: err instanceof Error ? err.message : String(err),
+      month: new Date().toISOString().slice(0, 7),
+      totalCents: 0,
+      totalEntries: 0,
+      byCategory: [],
+      byHerd: [],
+      byPasture: [],
+      byEquipment: [],
+      byJob: [],
+      rows: [],
+    };
+  }
+});
