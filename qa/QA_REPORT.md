@@ -34,3 +34,13 @@ The agent-browser *rendered* DOM kept showing the pre-fix bundle on the /demo pa
 ## Files touched
 - /home/team/shared/site/src/components/demo/ComplianceModule.tsx (made sortable)
 - /home/team/shared/site/src/components/demo/OverviewModule.tsx (site-aware subtitle)
+
+## Part D — Lead-magnet signup verification (2026-09-02, APPROVED TASK)
+Scope: complete & ship the in-flight lead-magnet signup rework (landing form offers the free Cost-Per-Head Worksheet in exchange for an email). Verification of the committed implementation (src/routes/index.tsx EmailSignup + src/server/subscribers.ts + migration 0009):
+- Valid email → success state with "View & print your Cost-Per-Head Worksheet →" link to /worksheet. PASS (code: `setDone(true)` renders success panel).
+- Invalid email → clear message "Please enter a valid email address." (browser `type=email required` + server regex + `ok:false` path). PASS.
+- Duplicate/repeat submissions safe: button disabled while busy + client `if (busy) return` + server `ON CONFLICT (email) DO NOTHING`; re-submits return `already-subscribed` and are treated as success, no duplicate row, no error. PASS.
+- Data path: `subscribeEmail` server fn inserts into `subscribers` (opted_in=true, source='landing-page'); returns only `{ok,status}` — no subscriber data reaches the browser bundle beyond that; server never logs emails. PASS.
+- Mobile/desktop: single-column `w-full` inputs, responsive heading (`sm:text-4xl`), works at gate/shop widths. PASS (by inspection).
+- Production build: `bun run build` exit 0 (vite client+ssr, ~2.3s). Type check `bunx tsc --noEmit`: 15 pre-existing project-wide nits (Bun globals in serve.ts, unused vars) — none in subscribers/type files; not blocking (no lint/test script configured).
+- Secret scan on all signup-path files: 0 matches (no whsec/sk/pk/napi/conn-strings); only placeholder `you@ranch.com`. PASS.
