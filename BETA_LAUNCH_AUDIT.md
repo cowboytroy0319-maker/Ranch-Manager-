@@ -14,7 +14,7 @@
 | Multi-ranch scoping | 🟡 YELLOW — DB only | `operations` table (single "Default Operation") + `animals.ranch_id` NOT NULL (mig 0013) + per-ranch unique tag index. But no account boundary; authorship comments in `server/livestock.ts` state "no auth layer exists." |
 | Backup / restore | 🔴 RED — MISSING | No backup/restore tooling, runbook, or docs in repo or README. Neon has native features; nothing configured or documented here. |
 | Error monitoring | 🔴 RED — MISSING | No Sentry/DataDog/anything in deps; no alerting. Only self-hosted `/analytics` page views; server errors go to `.run/server.log` on this machine. |
-| Custom domain | 🟡 YELLOW | No domain purchased, no DNS hosted. Marketing/working/public URLs are the `cto.new` platform subdomains (see §5). |
+| Custom domain | 🟡 YELLOW | **ranchmanagerpro.com purchased 2026-09-02** (platform-registered, DNS auto-provisioning); not yet verified to serve the live site — currently remains on the platform subdomain. See §5. |
 | Email delivery | 🟡 YELLOW | Platform inbox only; no SendGrid/Postmark/Resend in deps. `subscribers` table captures opted-in emails; nothing sends mail (lead-magnet delivery is on-page, not emailed). |
 | Stripe checkout | 🟡 YELLOW | Catalog live (Herd $15 / Ranch $30 / Manager $75 / Legacy $200 monthly; annual = 11 mo, Legacy 10); webhook handler serves `/webhook`; signing secret in DB. **Balance $0.00, zero transactions** — real-money trial path is unproven end-to-end and has no invoices/refund workflow yet. |
 | Data persistence | 🟢 GREEN | Livestock, feed, pasture, equipment, expenses, employees, tax exemptions, analytics (page_views), subscribers all read/write Postgres via `createServerFn`. Repo seed = demo fixture. |
@@ -69,7 +69,7 @@ The live site serves the NEW build (Culled/Archived filters + "Livestock Invento
 
 | Concern | Ownership | Readiness |
 |---|---|---|
-| Domain | No custom domain; public URL is the platform subdomain — ownership = cto.new platform. | YELLOW (sellable, but no branded URL, no control of the root domain). |
+| Domain | **ranchmanagerpro.com** registered 2026-09-02 (platform-managed; DNS auto-provisioned: wildcard CNAME, apex ALIAS, ACM validation — verification in progress). Public URL remains the cto.new subdomain until verified. | YELLOW — owned & brandable; not yet verified to serve the live site. |
 | Deployment | Repo has `publish.sh` (build + restart :3000) and `go-live.sh` (Vercel). No repo-owned CI/CD. Platform runs the servers. | YELLOW — publish happened outside the APPROVED-TASK process; no documented owner for "who may deploy." |
 | DB | Neon connected via `DATABASE_URL` from platform Secrets; migrations 0001–0013 applied 2026-09-02. Owner controls the connection. | GREEN for schema; RED for backup/DR. |
 | Backup/restore | Nothing in repo/docs. | RED — MISSING; configure Neon backup/restore + runbook before real data. |
