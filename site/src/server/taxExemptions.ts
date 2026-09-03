@@ -11,6 +11,7 @@
 // just US states — is supported.
 // ============================================================================
 import { createServerFn } from "@tanstack/react-start";
+import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import { UPCOMING_HORIZON_DAYS, type TaxExemptionData, type TaxExemptionInput, type TaxExemptionRow, type TaxExemptionStatus } from "~/types/taxExemptions";
 
@@ -82,6 +83,7 @@ export const getTaxExemptionsData = createServerFn().handler(async (): Promise<T
     return { configured: false, exemptions: [], expired: [], upcoming: [], active: [] };
   }
   try {
+    const auth = await requireAuth();
     const db = sql();
     const today = todayStr();
     const rows = await db<TaxExemptionRow[]>`
@@ -89,6 +91,7 @@ export const getTaxExemptionsData = createServerFn().handler(async (): Promise<T
              to_char(expires_on, 'YYYY-MM-DD') AS expires_on, contact, notes,
              created_at::text AS created_at, updated_at::text AS updated_at
       FROM tax_exemptions
+      WHERE operation_id = ${auth.operationId}
       ORDER BY (expires_on IS NULL), expires_on, identifier_type, id`;
 
     const exemptions: TaxExemptionRow[] = rows.map((r) => ({
@@ -124,6 +127,7 @@ export const saveTaxExemption = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
     try {
+      const auth = await requireAuth();
       const db = sql();
       const e = data;
       if (e.id) {
@@ -132,13 +136,13 @@ export const saveTaxExemption = createServerFn({ method: "POST" })
             identifier_number=${e.identifier_number}, jurisdiction=${e.jurisdiction},
             entity=${e.entity}, expires_on=${e.expires_on}, contact=${e.contact},
             notes=${e.notes}, updated_at=now()
-          WHERE id=${e.id} RETURNING id`;
+          WHERE id=${e.id} AND operation_id=${auth.operationId} RETURNING id`;
         if (updated.length === 0) return { ok: false, error: `Registry record #${e.id} no longer exists.` };
         return { ok: true, id: e.id };
       }
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO tax_exemptions (identifier_type, identifier_number, jurisdiction, entity, expires_on, contact, notes)
-        VALUES (${e.identifier_type}, ${e.identifier_number}, ${e.jurisdiction}, ${e.entity}, ${e.expires_on}, ${e.contact}, ${e.notes})
+        INSERT INTO tax_exemptions (operation_id, identifier_type, identifier_number, jurisdiction, entity, expires_on, contact, notes)
+        VALUES (${auth.operationId}, ${e.identifier_type}, ${e.identifier_number}, ${e.jurisdiction}, ${e.entity}, ${e.expires_on}, ${e.contact}, ${e.notes})
         RETURNING id`;
       return { ok: true, id: row.id };
     } catch (err) {
@@ -161,8 +165,9 @@ export const deleteTaxExemption = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
     try {
+      const auth = await requireAuth();
       const db = sql();
-      const del = await db`DELETE FROM tax_exemptions WHERE id=${data.id} RETURNING id`;
+      const del = await db`DELETE FROM tax_exemptions WHERE id=${data.id} AND operation_id=${auth.operationId} RETURNING id`;
       if (del.length === 0) return { ok: false, error: `Registry record #${data.id} no longer exists.` };
       return { ok: true, id: data.id };
     } catch (err) {

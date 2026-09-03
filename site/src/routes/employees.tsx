@@ -1,11 +1,17 @@
-import { Link, createFileRoute, useRouter } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { EmployeeFormModal } from "~/components/employees/EmployeesModals";
 import { deleteEmployee, getEmployeesData } from "~/server/employees";
 import { PAY_TYPE_LABEL, type EmployeeRow, type PayType } from "~/types/employees";
+import { getSession } from "~/server/auth";
 
 export const Route = createFileRoute("/employees")({
+  beforeLoad: async () => {
+    const session = await getSession();
+    if (!session.authed) throw redirect({ to: "/login", search: { reason: "auth" } });
+  },
+
   loader: () => getEmployeesData(),
   component: EmployeesPage,
 });

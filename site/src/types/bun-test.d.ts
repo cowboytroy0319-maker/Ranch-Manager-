@@ -6,6 +6,9 @@ declare module "bun:test" {
   export function describe(name: string, fn: () => void): void;
   export function test(name: string, fn: () => void): void;
   export function expect<T>(actual: T): BunTestExpect<T>;
+  // Lifecycle hooks used by the auth integration tests (src/server/auth.test.ts).
+  export function beforeAll(fn: () => void | Promise<void>): void;
+  export function afterAll(fn: () => void | Promise<void>): void;
 }
 
 interface BunTestExpect<T> {
@@ -14,4 +17,7 @@ interface BunTestExpect<T> {
   toBeNull(): void;
   toThrow(message?: string | RegExp): void;
   toContain(item: unknown): void;
+  // Matchers used by the auth integration tests (negation + presence).
+  not: BunTestExpect<T>;
+  toBeDefined(): void;
 }

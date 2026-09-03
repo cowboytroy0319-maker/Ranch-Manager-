@@ -4,6 +4,7 @@
 // handlers run on the server and return JSON-safe data.
 // ============================================================================
 import { createServerFn } from "@tanstack/react-start";
+import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import type {
   GrazingDay,
@@ -22,12 +23,14 @@ export const getPastureData = createServerFn().handler(async (): Promise<Pasture
     return { configured: false, pastures: [], assignments: [], grazing: [], observations: [], groups: [] };
   }
   try {
+    const auth = await requireAuth();
     const db = sql();
     const [pastureRows, assignmentRows, grazingRows, obsRows, groupRows] = await Promise.all([
       db`
         SELECT id, name, size_acres, location, status, soil_type, notes,
                created_at::text AS created_at, updated_at::text AS updated_at
         FROM pastures
+        WHERE operation_id = ${auth.operationId}
         ORDER BY name`,
       db`
         SELECT pa.id, pa.pasture_id, pa.herd_group_id, g.name AS herd_group_name, g.species,
@@ -37,17 +40,23 @@ export const getPastureData = createServerFn().handler(async (): Promise<Pasture
                pa.notes
         FROM pasture_assignments pa
         LEFT JOIN herd_groups g ON g.id = pa.herd_group_id
+        WHERE pa.operation_id = ${auth.operationId}
         ORDER BY pa.assigned_at DESC, pa.id DESC`,
       db`
         SELECT id, pasture_id, to_char(log_date, 'YYYY-MM-DD') AS log_date, status, notes
         FROM grazing_log
+        WHERE operation_id = ${auth.operationId}
         ORDER BY log_date DESC, id DESC`,
       db`
         SELECT id, pasture_id, to_char(observed_on, 'YYYY-MM-DD') AS observed_on, category, note,
                to_char(action_due, 'YYYY-MM-DD') AS action_due
         FROM pasture_observations
+        WHERE operation_id = ${auth.operationId}
         ORDER BY observed_on DESC, id DESC`,
-      db`SELECT id, name, species, notes FROM herd_groups ORDER BY name`,
+      db`
+        SELECT id, name, species, notes FROM herd_groups
+        WHERE operation_id = ${auth.operationId}
+        ORDER BY name`,
     ]);
 
     return {

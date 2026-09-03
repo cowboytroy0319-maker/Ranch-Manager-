@@ -7,6 +7,7 @@
 // JSON-safe data or a safe no-op.
 // ============================================================================
 import { createServerFn } from "@tanstack/react-start";
+import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import type { AnalyticsBucket, AnalyticsData, AnalyticsDay } from "~/types/analytics";
 
@@ -67,7 +68,13 @@ export const getAnalyticsData = createServerFn().handler(
       };
     }
     try {
+      const auth = await requireAuth();
       const db = sql();
+      // Page views are site-wide (marketing/opt-in traffic) and deliberately
+      // NOT operation-scoped — the analytics page is an owner/admin surface.
+      // requireAuth() is called anyway so /analytics stays behind the sign-in
+      // wall even though the aggregates are global.
+      void auth;
       const [total, today, unique, last7, byPage, referrers] = await Promise.all([
         db<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM page_views`,
         db<{ c: number }[]>`SELECT COUNT(*)::int AS c FROM page_views WHERE created_at::date = current_date`,

@@ -12,6 +12,7 @@
 // animals table so it feeds the app's cost-per-head picture consistently.
 // ============================================================================
 import { createServerFn } from "@tanstack/react-start";
+import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import {
   PAY_TYPES,
@@ -138,7 +139,9 @@ export const getEmployeesData = createServerFn().handler(async (): Promise<Emplo
     };
   }
   try {
+    const auth = await requireAuth();
     const db = sql();
+    const operationId = auth.operationId;
     const [emplRows, groupRows, headRow] = await Promise.all([
       db`
         SELECT e.id, e.name, e.role, e.pay_type,
@@ -149,9 +152,10 @@ export const getEmployeesData = createServerFn().handler(async (): Promise<Emplo
                e.created_at::text AS created_at, e.updated_at::text AS updated_at
         FROM employees e
         LEFT JOIN herd_groups hg ON hg.id = e.herd_group_id
+        WHERE e.operation_id = ${operationId}
         ORDER BY e.pay_type, e.name, e.id`,
-      db<HerdGroupRef[]>`SELECT id, name FROM herd_groups ORDER BY name`,
-      db<{ n: number }[]>`SELECT COUNT(*)::int AS n FROM animals WHERE status = 'active'`,
+      db<HerdGroupRef[]>`SELECT id, name FROM herd_groups WHERE operation_id = ${operationId} ORDER BY name`,
+      db<{ n: number }[]>`SELECT COUNT(*)::int AS n FROM animals WHERE status = 'active' AND ranch_id = ${operationId}`,
     ]);
 
     const employees: EmployeeRow[] = emplRows.map((r) => ({
@@ -202,6 +206,7 @@ export const saveEmployee = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
     try {
+      const auth = await requireAuth();
       const db = sql();
       const e = data;
       if (e.id) {
@@ -211,14 +216,14 @@ export const saveEmployee = createServerFn({ method: "POST" })
             contract_amount=${e.contract_amount}, crew=${e.crew}, hire_date=${e.hire_date},
             contact=${e.contact}, job=${e.job}, herd_group_id=${e.herd_group_id},
             notes=${e.notes}, updated_at=now()
-          WHERE id=${e.id} RETURNING id`;
+          WHERE id=${e.id} AND operation_id=${auth.operationId} RETURNING id`;
         if (updated.length === 0) return { ok: false, error: `Employee #${e.id} no longer exists.` };
         return { ok: true, id: e.id };
       }
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO employees (name, role, pay_type, wage_rate, hours, salary_amount,
+        INSERT INTO employees (operation_id, name, role, pay_type, wage_rate, hours, salary_amount,
                                contract_amount, crew, hire_date, contact, job, herd_group_id, notes)
-        VALUES (${e.name}, ${e.role}, ${e.pay_type}, ${e.wage_rate}, ${e.hours}, ${e.salary_amount},
+        VALUES (${auth.operationId}, ${e.name}, ${e.role}, ${e.pay_type}, ${e.wage_rate}, ${e.hours}, ${e.salary_amount},
                 ${e.contract_amount}, ${e.crew}, ${e.hire_date}, ${e.contact}, ${e.job},
                 ${e.herd_group_id}, ${e.notes})
         RETURNING id`;
@@ -243,8 +248,9 @@ export const deleteEmployee = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
     try {
+      const auth = await requireAuth();
       const db = sql();
-      const del = await db`DELETE FROM employees WHERE id=${data.id} RETURNING id`;
+      const del = await db`DELETE FROM employees WHERE id=${data.id} AND operation_id=${auth.operationId} RETURNING id`;
       if (del.length === 0) return { ok: false, error: `Employee #${data.id} no longer exists.` };
       return { ok: true, id: data.id };
     } catch (err) {

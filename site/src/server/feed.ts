@@ -4,6 +4,7 @@
 // the handlers run on the server and return JSON-safe data.
 // ============================================================================
 import { createServerFn } from "@tanstack/react-start";
+import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import type { HerdGroupRef } from "~/types/feed";
 import {
@@ -26,6 +27,7 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
     return { configured: false, hay: [], feed: [], groups: [], usage: [] };
   }
   try {
+    const auth = await requireAuth();
     const db = sql();
     const [hayRows, feedRows, groupRows, usageRows] = await Promise.all([
       db`
@@ -35,14 +37,19 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
                low_stock_threshold::float8 AS low_stock_threshold, notes,
                created_at::text AS created_at, updated_at::text AS updated_at
         FROM hay_inventory
+        WHERE operation_id = ${auth.operationId}
         ORDER BY feed_type, cutting NULLS LAST, id`,
       db`
         SELECT id, name, category, quantity::float8 AS quantity, unit, supplier,
                unit_cost_cents, low_stock_threshold::float8 AS low_stock_threshold, notes,
                created_at::text AS created_at, updated_at::text AS updated_at
         FROM feed_inventory
+        WHERE operation_id = ${auth.operationId}
         ORDER BY category, name, id`,
-      db`SELECT id, name, species, notes FROM herd_groups ORDER BY name`,
+      db`
+        SELECT id, name, species, notes FROM herd_groups
+        WHERE operation_id = ${auth.operationId}
+        ORDER BY name`,
       db`
         SELECT u.id, to_char(u.log_date, 'YYYY-MM-DD') AS log_date, u.item_kind,
                u.hay_item_id, u.feed_item_id, u.quantity::float8 AS quantity, u.unit,
@@ -50,6 +57,7 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
                u.created_at::text AS created_at
         FROM usage_log u
         LEFT JOIN herd_groups g ON g.id = u.herd_group_id
+        WHERE u.operation_id = ${auth.operationId}
         ORDER BY u.log_date DESC, u.id DESC
         LIMIT 120`,
     ]);
@@ -218,6 +226,7 @@ export const saveHay = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
     try {
+      const auth = await requireAuth();
       const db = sql();
       const h = data;
       if (h.id) {
@@ -227,14 +236,14 @@ export const saveHay = createServerFn({ method: "POST" })
             quantity=${h.quantity}, unit=${h.unit}, bale_weight_lbs=${h.bale_weight_lbs},
             date_acquired=${h.date_acquired}, low_stock_threshold=${h.low_stock_threshold},
             notes=${h.notes}, updated_at=now()
-          WHERE id=${h.id} RETURNING id`;
+          WHERE id=${h.id} AND operation_id=${auth.operationId} RETURNING id`;
         if (updated.length === 0) return { ok: false, error: `Hay stack #${h.id} no longer exists.` };
         return { ok: true, id: h.id };
       }
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO hay_inventory (feed_type, cutting, field_or_source, storage_location, quantity, unit,
+        INSERT INTO hay_inventory (operation_id, feed_type, cutting, field_or_source, storage_location, quantity, unit,
                                    bale_weight_lbs, date_acquired, low_stock_threshold, notes)
-        VALUES (${h.feed_type}, ${h.cutting}, ${h.field_or_source}, ${h.storage_location}, ${h.quantity},
+        VALUES (${auth.operationId}, ${h.feed_type}, ${h.cutting}, ${h.field_or_source}, ${h.storage_location}, ${h.quantity},
                 ${h.unit}, ${h.bale_weight_lbs}, ${h.date_acquired}, ${h.low_stock_threshold}, ${h.notes})
         RETURNING id`;
       return { ok: true, id: row.id };
@@ -252,6 +261,7 @@ export const saveFeedItem = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
     try {
+      const auth = await requireAuth();
       const db = sql();
       const f = data;
       if (f.id) {
@@ -259,13 +269,13 @@ export const saveFeedItem = createServerFn({ method: "POST" })
           UPDATE feed_inventory SET name=${f.name}, category=${f.category}, quantity=${f.quantity},
             unit=${f.unit}, supplier=${f.supplier}, unit_cost_cents=${f.unit_cost_cents},
             low_stock_threshold=${f.low_stock_threshold}, notes=${f.notes}, updated_at=now()
-          WHERE id=${f.id} RETURNING id`;
+          WHERE id=${f.id} AND operation_id=${auth.operationId} RETURNING id`;
         if (updated.length === 0) return { ok: false, error: `Feed item #${f.id} no longer exists.` };
         return { ok: true, id: f.id };
       }
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO feed_inventory (name, category, quantity, unit, supplier, unit_cost_cents, low_stock_threshold, notes)
-        VALUES (${f.name}, ${f.category}, ${f.quantity}, ${f.unit}, ${f.supplier}, ${f.unit_cost_cents},
+        INSERT INTO feed_inventory (operation_id, name, category, quantity, unit, supplier, unit_cost_cents, low_stock_threshold, notes)
+        VALUES (${auth.operationId}, ${f.name}, ${f.category}, ${f.quantity}, ${f.unit}, ${f.supplier}, ${f.unit_cost_cents},
                 ${f.low_stock_threshold}, ${f.notes})
         RETURNING id`;
       return { ok: true, id: row.id };
@@ -284,40 +294,43 @@ export const logUsage = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
     try {
+      const auth = await requireAuth();
       const db = sql();
       const u = data;
       if (u.quantity <= 0) return { ok: false, error: "Quantity used must be greater than zero." };
       if (!u.log_date) return { ok: false, error: "Date is required." };
       // Two explicit branches instead of dynamic table/column identifiers —
       // interpolated strings are parameters in postgres.js, not identifiers.
+      // Every read/update is scoped by the session operation_id so a usage log
+      // can never touch another operation's inventory.
       return await db.begin(async (tx): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
         if (u.item_kind === "hay") {
           const [item] = await tx<[{ quantity: string; unit: string }]>`
-            SELECT quantity, unit FROM hay_inventory WHERE id=${u.item_id} FOR UPDATE`;
+            SELECT quantity, unit FROM hay_inventory WHERE id=${u.item_id} AND operation_id=${auth.operationId} FOR UPDATE`;
           if (!item) return { ok: false, error: "That hay stack no longer exists." };
           const onHand = Number(item.quantity);
           if (onHand < u.quantity) {
             return { ok: false, error: `Only ${onHand} ${item.unit} on hand — can't use ${u.quantity} ${item.unit}.` };
           }
           const [row] = await tx<[{ id: number }]>`
-            INSERT INTO usage_log (log_date, item_kind, hay_item_id, quantity, unit, herd_group_id, pasture, notes)
-            VALUES (${u.log_date}, 'hay', ${u.item_id}, ${u.quantity}, ${item.unit}, ${u.herd_group_id}, ${u.pasture}, ${u.notes})
+            INSERT INTO usage_log (operation_id, log_date, item_kind, hay_item_id, quantity, unit, herd_group_id, pasture, notes)
+            VALUES (${auth.operationId}, ${u.log_date}, 'hay', ${u.item_id}, ${u.quantity}, ${item.unit}, ${u.herd_group_id}, ${u.pasture}, ${u.notes})
             RETURNING id`;
-          await tx`UPDATE hay_inventory SET quantity = quantity - ${u.quantity}, updated_at = now() WHERE id=${u.item_id}`;
+          await tx`UPDATE hay_inventory SET quantity = quantity - ${u.quantity}, updated_at = now() WHERE id=${u.item_id} AND operation_id=${auth.operationId}`;
           return { ok: true, id: row.id };
         }
         const [item] = await tx<[{ quantity: string; unit: string }]>`
-          SELECT quantity, unit FROM feed_inventory WHERE id=${u.item_id} FOR UPDATE`;
+          SELECT quantity, unit FROM feed_inventory WHERE id=${u.item_id} AND operation_id=${auth.operationId} FOR UPDATE`;
         if (!item) return { ok: false, error: "That feed item no longer exists." };
         const onHand = Number(item.quantity);
         if (onHand < u.quantity) {
           return { ok: false, error: `Only ${onHand} ${item.unit} on hand — can't use ${u.quantity} ${item.unit}.` };
         }
         const [row] = await tx<[{ id: number }]>`
-          INSERT INTO usage_log (log_date, item_kind, feed_item_id, quantity, unit, herd_group_id, pasture, notes)
-          VALUES (${u.log_date}, 'feed', ${u.item_id}, ${u.quantity}, ${item.unit}, ${u.herd_group_id}, ${u.pasture}, ${u.notes})
+          INSERT INTO usage_log (operation_id, log_date, item_kind, feed_item_id, quantity, unit, herd_group_id, pasture, notes)
+          VALUES (${auth.operationId}, ${u.log_date}, 'feed', ${u.item_id}, ${u.quantity}, ${item.unit}, ${u.herd_group_id}, ${u.pasture}, ${u.notes})
           RETURNING id`;
-        await tx`UPDATE feed_inventory SET quantity = quantity - ${u.quantity}, updated_at = now() WHERE id=${u.item_id}`;
+        await tx`UPDATE feed_inventory SET quantity = quantity - ${u.quantity}, updated_at = now() WHERE id=${u.item_id} AND operation_id=${auth.operationId}`;
         return { ok: true, id: row.id };
       });
     } catch (err) {

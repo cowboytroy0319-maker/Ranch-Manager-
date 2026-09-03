@@ -1,4 +1,4 @@
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { Badge } from "~/components/ui";
 import { MorningBriefing } from "~/components/dashboard/MorningBriefing";
 import { LivestockSnapshot } from "~/components/dashboard/LivestockSnapshot";
@@ -15,8 +15,14 @@ import { getPastureData } from "~/server/pasture";
 import { getEquipmentData } from "~/server/equipment";
 import { getCostData } from "~/server/costs";
 import { getExpensesData } from "~/server/expenses";
+import { getSession } from "~/server/auth";
 
 export const Route = createFileRoute("/dashboard")({
+  beforeLoad: async () => {
+    const session = await getSession();
+    if (!session.authed) throw redirect({ to: "/login", search: { reason: "auth" } });
+  },
+
   // Load every real dataset behind the Daily Operations board in one round trip.
   loader: async () => {
     const [livestock, feed, pasture, equipment, costs, expenses, tax] = await Promise.all([

@@ -7,11 +7,13 @@
 // NOT from maintenance_records, so the dashboard shows one maintenance figure.
 // ============================================================================
 import { createServerFn } from "@tanstack/react-start";
+import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import type { DimensionTotal, ExpenseData, ExpenseRow } from "~/types/expenses";
 
 // Current-month scope: every aggregate and row below filters to the month the
 // DB clock says it currently is, so the dashboard always shows this month.
+// (operation_id is bound per query below via the ${auth.operationId} params.)
 const THIS_MONTH = "e.expense_date >= date_trunc('month', now())::date";
 
 export const getExpensesData = createServerFn().handler(async (): Promise<ExpenseData> => {
@@ -30,7 +32,9 @@ export const getExpensesData = createServerFn().handler(async (): Promise<Expens
     };
   }
   try {
+    const auth = await requireAuth();
     const db = sql();
+    const operationId = auth.operationId;
     const monthRow = await db`select to_char(date_trunc('month', now()), 'YYYY-MM') as m`;
     const month = monthRow[0]?.m ?? new Date().toISOString().slice(0, 7);
     const [rows, cat, herd, pasture, equipment, job, grand] = await Promise.all([
@@ -43,41 +47,44 @@ export const getExpensesData = createServerFn().handler(async (): Promise<Expens
         LEFT JOIN herd_groups hg ON hg.id = e.herd_group_id
         LEFT JOIN pastures p ON p.id = e.pasture_id
         LEFT JOIN equipment eq ON eq.id = e.equipment_id
-        WHERE ${db.unsafe(THIS_MONTH)}
+        WHERE e.operation_id = ${operationId} AND ${db.unsafe(THIS_MONTH)}
         ORDER BY e.expense_date, e.id`,
       db<{ category: ExpenseRow["category"]; amount_cents: number; entries: number }[]>`
         SELECT category, SUM(amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
         FROM expenses
-        WHERE expense_date >= date_trunc('month', now())::date
+        WHERE operation_id = ${operationId}
+          AND expense_date >= date_trunc('month', now())::date
         GROUP BY category ORDER BY amount_cents DESC`,
       db<DimensionTotal[]>`
         SELECT coalesce(hg.name, 'Unallocated') AS name,
                coalesce(hg.species, 'none') AS species,
                SUM(e.amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
         FROM expenses e LEFT JOIN herd_groups hg ON hg.id = e.herd_group_id
-        WHERE ${db.unsafe(THIS_MONTH)}
+        WHERE e.operation_id = ${operationId} AND ${db.unsafe(THIS_MONTH)}
         GROUP BY 1, 2 ORDER BY amount_cents DESC`,
       db<DimensionTotal[]>`
         SELECT coalesce(p.name, 'Unallocated') AS name,
                SUM(e.amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
         FROM expenses e LEFT JOIN pastures p ON p.id = e.pasture_id
-        WHERE ${db.unsafe(THIS_MONTH)}
+        WHERE e.operation_id = ${operationId} AND ${db.unsafe(THIS_MONTH)}
         GROUP BY 1 ORDER BY amount_cents DESC`,
       db<DimensionTotal[]>`
         SELECT coalesce(eq.name, 'Unallocated') AS name,
                SUM(e.amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
         FROM expenses e LEFT JOIN equipment eq ON eq.id = e.equipment_id
-        WHERE ${db.unsafe(THIS_MONTH)}
+        WHERE e.operation_id = ${operationId} AND ${db.unsafe(THIS_MONTH)}
         GROUP BY 1 ORDER BY amount_cents DESC`,
       db<DimensionTotal[]>`
         SELECT coalesce(e.job, 'Unallocated') AS name,
                SUM(e.amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
         FROM expenses e
-        WHERE ${db.unsafe(THIS_MONTH)}
+        WHERE e.operation_id = ${operationId} AND ${db.unsafe(THIS_MONTH)}
         GROUP BY 1 ORDER BY amount_cents DESC`,
       db<{ total_cents: number; total_entries: number }[]>`
         SELECT coalesce(SUM(amount_cents), 0)::int AS total_cents, COUNT(*)::int AS total_entries
-        FROM expenses WHERE expense_date >= date_trunc('month', now())::date`,
+        FROM expenses
+        WHERE operation_id = ${operationId}
+          AND expense_date >= date_trunc('month', now())::date`,
     ]);
     const g = grand[0];
     return {

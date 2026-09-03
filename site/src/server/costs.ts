@@ -7,6 +7,7 @@
 // tracked" by the UI until the expenses module ships.
 // ============================================================================
 import { createServerFn } from "@tanstack/react-start";
+import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 
 export type FuelByEquipment = {
@@ -36,7 +37,9 @@ export const getCostData = createServerFn().handler(async (): Promise<CostData> 
     return { configured: false, month: "", fuel: null };
   }
   try {
+    const auth = await requireAuth();
     const db = sql();
+    const operationId = auth.operationId;
     const monthRow = await db`select to_char(date_trunc('month', now()), 'YYYY-MM') as m`;
     const month = monthRow[0]?.m ?? new Date().toISOString().slice(0, 7);
     const [summary, byEquip] = await Promise.all([
@@ -45,7 +48,8 @@ export const getCostData = createServerFn().handler(async (): Promise<CostData> 
                COUNT(*)::int AS total_entries,
                coalesce(SUM(gallons), 0)::float8 AS gallons, coalesce(AVG(price_per_gal_cents),0)::int AS avg_ppg
         FROM fuel_log
-        WHERE fuel_date >= date_trunc('month', now())::date`,
+        WHERE operation_id = ${operationId}
+          AND fuel_date >= date_trunc('month', now())::date`,
       db`
         SELECT coalesce(e.name, 'Unassigned') AS equipment_name,
                COUNT(*)::int AS entries,
@@ -53,7 +57,8 @@ export const getCostData = createServerFn().handler(async (): Promise<CostData> 
                coalesce(SUM(f.gallons), 0)::float8 AS gallons
         FROM fuel_log f
         LEFT JOIN equipment e ON e.id = f.equipment_id
-        WHERE f.fuel_date >= date_trunc('month', now())::date
+        WHERE f.operation_id = ${operationId}
+          AND f.fuel_date >= date_trunc('month', now())::date
         GROUP BY 1
         ORDER BY cost_cents DESC`,
     ]);

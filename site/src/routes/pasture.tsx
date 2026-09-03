@@ -1,10 +1,16 @@
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect } from "@tanstack/react-router";
+import { getSession } from "~/server/auth";
 import { useMemo, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { getPastureData } from "~/server/pasture";
 import type { Pasture, Species } from "~/types/pasture";
 
 export const Route = createFileRoute("/pasture")({
+  beforeLoad: async () => {
+    const session = await getSession();
+    if (!session.authed) throw redirect({ to: "/login", search: { reason: "auth" } });
+  },
+
   loader: () => getPastureData(),
   component: PasturePage,
 });

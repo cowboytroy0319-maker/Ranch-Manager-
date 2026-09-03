@@ -4,6 +4,7 @@
 // files; the handlers run on the server and return JSON-safe data.
 // ============================================================================
 import { createServerFn } from "@tanstack/react-start";
+import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import type { EquipmentData, EquipmentItem, FuelEntry, MaintenanceRecord } from "~/types/equipment";
 
@@ -16,6 +17,7 @@ export const getEquipmentData = createServerFn().handler(async (): Promise<Equip
     return { configured: false, equipment: [], maintenance: [], fuel: [] };
   }
   try {
+    const auth = await requireAuth();
     const db = sql();
     const [equipRows, maintRows, fuelRows] = await Promise.all([
       db`
@@ -24,6 +26,7 @@ export const getEquipmentData = createServerFn().handler(async (): Promise<Equip
                location, license_plate, fuel_type, notes,
                created_at::text AS created_at, updated_at::text AS updated_at
         FROM equipment
+        WHERE operation_id = ${auth.operationId}
         ORDER BY category, name, id`,
       db`
         SELECT id, equipment_id, to_char(service_date, 'YYYY-MM-DD') AS service_date, service_type,
@@ -33,6 +36,7 @@ export const getEquipmentData = createServerFn().handler(async (): Promise<Equip
                next_due_hours::float8 AS next_due_hours, next_due_miles::float8 AS next_due_miles,
                vendor
         FROM maintenance_records
+        WHERE operation_id = ${auth.operationId}
         ORDER BY service_date DESC, id DESC`,
       db`
         SELECT f.id, f.equipment_id, e.name AS equipment_name,
@@ -42,6 +46,7 @@ export const getEquipmentData = createServerFn().handler(async (): Promise<Equip
                f.meter_miles::float8 AS meter_miles, f.location, f.notes
         FROM fuel_log f
         LEFT JOIN equipment e ON e.id = f.equipment_id
+        WHERE f.operation_id = ${auth.operationId}
         ORDER BY f.fuel_date DESC, f.id DESC
         LIMIT 300`,
     ]);

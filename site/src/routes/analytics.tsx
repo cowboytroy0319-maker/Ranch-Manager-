@@ -1,8 +1,14 @@
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { getAnalyticsData } from "~/server/analytics";
+import { getSession } from "~/server/auth";
 
 export const Route = createFileRoute("/analytics")({
+  beforeLoad: async () => {
+    const session = await getSession();
+    if (!session.authed) throw redirect({ to: "/login", search: { reason: "auth" } });
+  },
+
   loader: () => getAnalyticsData(),
 });
 

@@ -1,4 +1,5 @@
-import { Link, createFileRoute, useRouter } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect, useRouter } from "@tanstack/react-router";
+import { getSession } from "~/server/auth";
 import { useMemo, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import {
@@ -19,6 +20,11 @@ import {
 } from "~/types/livestock";
 
 export const Route = createFileRoute("/livestock")({
+  beforeLoad: async () => {
+    const session = await getSession();
+    if (!session.authed) throw redirect({ to: "/login", search: { reason: "auth" } });
+  },
+
   loader: () => getLivestockData(),
   component: LivestockPage,
 });

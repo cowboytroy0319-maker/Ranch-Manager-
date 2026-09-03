@@ -60,3 +60,32 @@ Scope: fix the over-reach where ear-tag uniqueness was GLOBAL (`animals_tag_numb
 - **Seed (`site/db/seed.ts`)**: the animals INSERT now includes `ranch_id` (default operation) so seeding still passes the new NOT NULL column.
 - **Tests (`src/server/livestock.test.ts`, `bun test`)**: 13 pass / 0 fail / 24 expect() — same-ranch different-id → collision; same tag in a DIFFERENT ranch → NOT a collision (plus the same-ranch positive control); own-id edit → not a collision; trimmed/blanks; rows without ranch_id never collide; no-match; tag-required + status allow-list tests kept.
 - **Build**: `bun run build` exit 0. Type check `bunx tsc --noEmit`: 15 pre-existing project-wide nits remain, **0 new errors in changed files**. Secret scan on changed files: 0 matches (no keys/conn strings/personal data).
+## Part G — Authentication + ranch-level isolation (2026-09-02, APPROVED TASK)
+Scope: real per-ranch accounts with server-side sessions, owner memberships, and operation-scoped isolation for every operational module. Migration `0014` committed; **NOT applied to Neon — applying it to prod is the owner's separate decision** (until then `/register` and `/login` show the designed "Database error" state on live).
+### Implemented
+- `src/server/auth.ts` — client-safe public surface: `register` / `login` / `logout` / `getSession` createServerFns (handlers lazy-dynamic-import the server-only module so the client bundle never carries `~/db`, `node:crypto`, or postgres) + `normalizeEmail` / `isValidEmail`.
+- `src/server/authServer.ts` — server-only machinery: scrypt hashing (`hashPassword`/`verifyPassword`, `scrypt:N:r:p:salt:hash`), session tokens (32-byte random, only the SHA-256 hash stored in `sessions`), HttpOnly SameSite=Lax cookie (`rmp_session`, 30-day), `resolveAuth`, `requireAuth`, injectable `registerCore`/`loginCore`.
+- `src/server/authTypes.ts` — `AuthedUser`, `AuthResult`, input types (no dependencies).
+- `db/migrations/0014_auth_users_operations.sql` — `users`, `operation_memberships` (role CHECK owner/worker/viewer), `sessions` (token_hash PK), plus `operation_id` scoping columns on every operational table with backfill onto the seeded Default Operation and NOT NULL where customer-facing.
+- Routes `/register`, `/login` + `src/components/AuthUI.tsx` (AuthFrame/Field/FieldError/useAuthForm). `/dashboard` `beforeLoad` guard redirects sessionless visitors to `/login?reason=auth`.
+- All 9 modified server modules (`feed`, `livestock`, `pasture`, `equipment`, `costs`, `expenses`, `employees`, `taxExemptions`, `analytics`) now call `requireAuth()` and scope every SELECT/INSERT/UPDATE by `auth.operationId`; writes that match zero rows are rejected ("no longer exists in this ranch"/"no longer exists"). Cross-ranch update affects zero rows; cross-ranch read returns no rows. Registered users always get a **new** operation (named by the customer) + owner membership — never the Default Operation, never demo data.
+- `src/types/bun-test.d.ts` extended (beforeAll/afterAll, `.not`, `.toBeDefined`) for the new integration test.
+### Tested (bun test, live commands)
+- `bun test src/server/auth.test.ts` → **10 pass / 0 fail / 33 expect()**. Applies all migrations (incl. 0014, idempotent) to a dedicated local test DB (`ranch_auth_test` on :5433) and refuses non-local DATABASE_URLs so Neon is never touched. Tests:
+  1. registerCore creates user + NEW customer-named operation + owner membership; new operation id ≠ seeded Default Operation id
+  2. duplicate email rejected ("That email is already registered — try signing in."), no second account
+  3. password stored as scrypt hash ≠ plaintext; `verifyPassword(plain, stored)` true; wrong password false
+  4. loginCore correct password → ok:true with operationId/role
+  5. loginCore wrong password → ok:false "Incorrect email or password."
+  6. loginCore unknown email → same generic error (no account enumeration)
+  7. `requireAuth` throws when no session ("Not authenticated")
+  8. `resolveAuth` returns null without a session cookie
+  9. cross-ranch READ rejected: user B's hay/herd rows invisible to queries scoped to user A's operation (positive control: visible under B)
+  10. cross-ranch UPDATE rejected: UPDATE scoped to A affects 0 rows on B's hay row; row untouched
+- `bun test src/server/livestock.test.ts` → **13 pass / 0 fail / 24 expect()** (no regression).
+- Type check `bunx tsc --noEmit`: 15 pre-existing nits only, 0 new (auth files + tests clean). Build: verified green by the lead (client + SSR, EXIT=0) — not re-run this session.
+### Remains
+- Applying migration 0014 to live Neon (owner's separate decision; until then `/register`/`/login` show the designed "Database error" state).
+- Worker/viewer invites UI (schema + `resolveAuth` already support the roles).
+- Publishing a build that includes `/register`, `/login`, and the auth-guarded modules (publish is a separate step, not part of this commit).
+- Crew-visible analytics/audit view, password reset flow (not built).

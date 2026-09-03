@@ -4,6 +4,7 @@
 // the handlers run on the server and return JSON-safe data.
 // ============================================================================
 import { createServerFn } from "@tanstack/react-start";
+import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import {
   ANIMAL_STATUSES,
@@ -20,22 +21,12 @@ import {
 // Read: everything the module needs in one round trip
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve the operation/ranch this deployment runs as. The app is
- * single-operation today (no auth layer), so the single `operations` row is
- * the implicit ranch scope. Returns null when the database is unreachable or
- * no operation row exists yet (migration 0013 always seeds one).
- */
-export async function currentRanchId(db: ReturnType<typeof sql>): Promise<number | null> {
-  const rows = await db<[{ id: number }]>`SELECT id FROM operations ORDER BY id LIMIT 1`;
-  return rows.length ? rows[0].id : null;
-}
-
 export const getLivestockData = createServerFn().handler(async (): Promise<LivestockData> => {
   if (!isDatabaseConfigured()) {
     return { configured: false, animals: [], groups: [], events: [] };
   }
   try {
+    const auth = await requireAuth();
     const db = sql();
     const [animalRows, groupRows, eventRows] = await Promise.all([
       db`
@@ -47,14 +38,21 @@ export const getLivestockData = createServerFn().handler(async (): Promise<Lives
                a.created_at::text AS created_at, a.updated_at::text AS updated_at
         FROM animals a
         LEFT JOIN herd_groups g ON g.id = a.herd_group_id
+        WHERE a.ranch_id = ${auth.operationId}
         ORDER BY a.species, COALESCE(NULLIF(a.tag_number, ''), a.name), a.id`,
-      db`SELECT id, name, species, notes FROM herd_groups ORDER BY name`,
       db`
-        SELECT id, animal_id, to_char(event_date, 'YYYY-MM-DD') AS event_date, type, description,
-               product, dosage, vet, withdrawal_days,
-               to_char(next_due, 'YYYY-MM-DD') AS next_due
-        FROM health_events
-        ORDER BY event_date DESC, id DESC`,
+        SELECT id, name, species, notes FROM herd_groups
+        WHERE operation_id = ${auth.operationId}
+        ORDER BY name`,
+      db`
+        SELECT h.id, h.animal_id,
+               to_char(h.event_date, 'YYYY-MM-DD') AS event_date, h.type, h.description,
+               h.product, h.dosage, h.vet, h.withdrawal_days,
+               to_char(h.next_due, 'YYYY-MM-DD') AS next_due
+        FROM health_events h
+        JOIN animals a ON a.id = h.animal_id
+        WHERE a.ranch_id = ${auth.operationId}
+        ORDER BY h.event_date DESC, h.id DESC`,
     ]);
 
     return {
@@ -219,18 +217,15 @@ export const saveAnimal = createServerFn({ method: "POST" })
     const a = data;
     const tag = a.tag_number.trim();
     try {
+      const auth = await requireAuth();
       const db = sql();
-      // This deployment is one operation: the ranch scope is the single
-      // operation row (README / migration 0013). No auth layer exists — do
-      // not invent one; ranch_id is simply resolved and enforced here.
-      const ranchId = await currentRanchId(db);
-      if (ranchId === null) return { ok: false, error: "No operation (ranch) is set up yet." };
+      const operationId = auth.operationId;
       if (a.id) {
         // Reject if another animal in THIS ranch already owns this tag
         // (exclude the row being edited; never touch an animal's ranch_id).
         const dups = await db<{ id: number; tag_number: string | null; ranch_id: number | null }[]>`
-          SELECT id, tag_number, ranch_id FROM animals WHERE tag_number = ${tag} AND ranch_id = ${ranchId}`;
-        if (findTagCollision(dups, tag, a.id, ranchId)) {
+          SELECT id, tag_number, ranch_id FROM animals WHERE tag_number = ${tag} AND ranch_id = ${operationId}`;
+        if (findTagCollision(dups, tag, a.id, operationId)) {
           return { ok: false, error: `Tag '${tag}' already exists in this ranch — tags must be unique.` };
         }
         const updated = await db`
@@ -238,22 +233,22 @@ export const saveAnimal = createServerFn({ method: "POST" })
             sex=${a.sex}, breed=${a.breed}, birth_date=${a.birth_date},
             acquisition_date=${a.acquisition_date}, status=${a.status},
             herd_group_id=${a.herd_group_id}, pasture=${a.pasture}, notes=${a.notes}, updated_at=now()
-          WHERE id=${a.id} AND ranch_id=${ranchId} RETURNING id`;
+          WHERE id=${a.id} AND ranch_id=${operationId} RETURNING id`;
         if (updated.length === 0) return { ok: false, error: `Animal #${a.id} no longer exists in this ranch.` };
         return { ok: true, id: a.id };
       }
       // Insert path: same ranch-scoped check first (brand-new row — nothing
-      // excluded). ranch_id is the current operation so new animals always
+      // excluded). ranch_id is the session operation so new animals always
       // land in this ranch.
       const dups = await db<{ id: number; tag_number: string | null; ranch_id: number | null }[]>`
-        SELECT id, tag_number, ranch_id FROM animals WHERE tag_number = ${tag} AND ranch_id = ${ranchId}`;
-      if (findTagCollision(dups, tag, a.id, ranchId)) {
+        SELECT id, tag_number, ranch_id FROM animals WHERE tag_number = ${tag} AND ranch_id = ${operationId}`;
+      if (findTagCollision(dups, tag, a.id, operationId)) {
         return { ok: false, error: `Tag '${tag}' already exists in this ranch — tags must be unique.` };
       }
       const [row] = await db<[{ id: number }]>`
         INSERT INTO animals (species, name, tag_number, sex, breed, birth_date, acquisition_date, status, herd_group_id, pasture, notes, ranch_id)
         VALUES (${a.species}, ${a.name}, ${a.tag_number}, ${a.sex}, ${a.breed}, ${a.birth_date},
-                ${a.acquisition_date}, ${a.status}, ${a.herd_group_id}, ${a.pasture}, ${a.notes}, ${ranchId})
+                ${a.acquisition_date}, ${a.status}, ${a.herd_group_id}, ${a.pasture}, ${a.notes}, ${operationId})
         RETURNING id`;
       return { ok: true, id: row.id };
     } catch (err) {
@@ -275,13 +270,22 @@ export const addHealthEvent = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
     try {
+      const auth = await requireAuth();
       const db = sql();
       const e = data;
+      // The health event is scoped through its animal: the animal must belong
+      // to the session operation or the write affects 0 rows (cross-ranch
+      // mutation rejected). A brand-new animal in another operation can't be
+      // referenced by id from this operation's session, so INSERT ... SELECT
+      // guards the scope without leaking a stack trace.
       const [row] = await db<[{ id: number }]>`
         INSERT INTO health_events (animal_id, event_date, type, description, product, dosage, vet, withdrawal_days, next_due)
-        VALUES (${e.animal_id}, ${e.event_date}, ${e.type}, ${e.description}, ${e.product}, ${e.dosage},
-                ${e.vet}, ${e.withdrawal_days}, ${e.next_due})
+        SELECT ${e.animal_id}, ${e.event_date}, ${e.type}, ${e.description}, ${e.product}, ${e.dosage},
+               ${e.vet}, ${e.withdrawal_days}, ${e.next_due}
+        FROM animals a
+        WHERE a.id = ${e.animal_id} AND a.ranch_id = ${auth.operationId}
         RETURNING id`;
+      if (!row) return { ok: false, error: "That animal doesn't exist in this ranch." };
       return { ok: true, id: row.id };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

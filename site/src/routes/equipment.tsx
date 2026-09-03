@@ -1,4 +1,5 @@
-import { Link, createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect } from "@tanstack/react-router";
+import { getSession } from "~/server/auth";
 import { useMemo } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { getEquipmentData } from "~/server/equipment";
@@ -13,6 +14,11 @@ import {
 } from "~/types/equipment";
 
 export const Route = createFileRoute("/equipment")({
+  beforeLoad: async () => {
+    const session = await getSession();
+    if (!session.authed) throw redirect({ to: "/login", search: { reason: "auth" } });
+  },
+
   loader: () => getEquipmentData(),
   component: EquipmentPage,
 });

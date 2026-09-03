@@ -59,6 +59,16 @@ Production (self-host): `bun run build && bun run start` (serves via `serve.ts`)
 - `/blog/...` — content pages; `/worksheet` — free lead-magnet worksheet
 - Checkout — Stripe subscription tiers: Herd $15 / Ranch $30 / Manager $75 / Legacy $200 (annual = pay 11 months)
 
+## Authentication & ranch isolation
+
+Accounts are real per-ranch logins (migration `0014_auth_users_operations.sql`):
+
+- **Users + server-side sessions.** Registration creates a row in `users` (email stored lowercase, unique) with a salted scrypt password hash (`scrypt:N:r:p:salt:hash`, from `node:crypto`) — plaintext is never stored. Sign-in opens a `sessions` row keyed by the SHA-256 hash of a random 32-byte token; the client only ever holds the raw token in an **HttpOnly, SameSite=Lax** cookie (`rmp_session`, 30-day expiry). The raw token is never persisted server-side.
+- **One ranch/operation per account, owner role.** `registerCore` always creates a **new** `operations` row named by the customer plus one `operation_memberships` row with role `owner`. A registered user never lands on the seeded "Default Operation" and never sees its demo data. Crew invites (worker/viewer roles) are a later milestone.
+- **Every operational module is scoped by the session operation.** Each read/write server fn (`getFeedData`, `saveHay`, `logUsage`, `saveAnimal`, `getLivestockData`, `getPastureData`, `getEquipmentData`, `getCostData`, `getExpensesData`, `getEmployeesData`, `getTaxExemptionsData`, ...) calls `requireAuth()` first, then filters every query by `auth.operationId`; writes additionally guard their `UPDATE/INSERT ... WHERE operation_id` so a cross-ranch write affects zero rows and is rejected.
+- **No Default-Operation fallback for customer data.** Pre-existing/demo rows are backfilled onto the Default Operation by the migration; customer accounts get a fresh, empty operation. Sessionless requests are rejected (`requireAuth` throws "Not authenticated").
+- **Flows:** `/register` (ranch name + email + password → creates account + operation + owner session → `/dashboard`), `/login` (correct credentials → session → `/dashboard`; wrong password → "Incorrect email or password."), sign-out clears the session row and cookie.
+
 ## Environment variables (NAMES only)
 
 | Name | Purpose |
@@ -72,7 +82,7 @@ Production (self-host): `bun run build && bun run start` (serves via `serve.ts`)
 
 ## Database schema (`db/migrations/`, idempotent)
 
-21 tables across 13 migrations: `operations`, `herd_groups`, `animals`, `health_events`, `hay_inventory`, `feed_inventory`, `usage_log`, `pastures`, `pasture_assignments`, `grazing_log`, `pasture_observations`, `equipment`, `maintenance_records`, `fuel_log`, `subscription_events`, `app_settings`, `expenses`, `page_views`, `subscribers`, `employees`, `tax_exemptions`.
+21 tables across 13 migrations: `operations`, `herd_groups`, `animals`, `health_events`, `hay_inventory`, `feed_inventory`, `usage_log`, `pastures`, `pasture_assignments`, `grazing_log`, `pasture_observations`, `equipment`, `maintenance_records`, `fuel_log`, `subscription_events`, `app_settings`, `expenses`, `page_views`, `subscribers`, `employees`, `tax_exemptions`. (Migration `0014` adds `users`, `operation_memberships`, `sessions` and the `operation_id` scoping columns; see "Authentication & ranch isolation" above.)
 
 Important: `0006_app_settings.sql` seeds a `stripe_webhook_secret` row — in this repository the value is a **placeholder** (`whsec_REPLACE_ME_EXAMPLE_ONLY`). Supply your real secret via the `STRIPE_WEBHOOK_SECRET` env var (the webhook handler reads env first, then the DB row as a fallback). The live production database already holds the correct value; fresh installs must set the env var or update the row.
 

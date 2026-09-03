@@ -1,4 +1,5 @@
-import { Link, createFileRoute, useRouter } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect, useRouter } from "@tanstack/react-router";
+import { getSession } from "~/server/auth";
 import { useMemo, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { FeedFormModal, HayFormModal, LogUsageModal, hayLabel } from "~/components/feed/FeedModals";
@@ -16,6 +17,11 @@ import {
 } from "~/types/feed";
 
 export const Route = createFileRoute("/feed")({
+  beforeLoad: async () => {
+    const session = await getSession();
+    if (!session.authed) throw redirect({ to: "/login", search: { reason: "auth" } });
+  },
+
   loader: () => getFeedData(),
   component: FeedPage,
 });

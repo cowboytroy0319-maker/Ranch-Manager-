@@ -1,11 +1,17 @@
-import { Link, createFileRoute, useRouter } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { TaxExemptionFormModal } from "~/components/taxExemptions/TaxExemptionModals";
 import { deleteTaxExemption, getTaxExemptionsData } from "~/server/taxExemptions";
 import { UPCOMING_HORIZON_DAYS, type TaxExemptionRow } from "~/types/taxExemptions";
+import { getSession } from "~/server/auth";
 
 export const Route = createFileRoute("/tax-exemptions")({
+  beforeLoad: async () => {
+    const session = await getSession();
+    if (!session.authed) throw redirect({ to: "/login", search: { reason: "auth" } });
+  },
+
   loader: () => getTaxExemptionsData(),
   component: TaxExemptionsPage,
 });
