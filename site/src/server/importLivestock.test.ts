@@ -31,7 +31,6 @@ import {
   IMPORT_MAX_NOTES,
   IMPORT_MAX_PASTURE,
   IMPORT_MAX_ROWS,
-  IMPORT_MAX_TAG,
 } from "~/types/importLivestock";
 
 // ---------------------------------------------------------------------------
@@ -334,7 +333,6 @@ describe("buildReviewSession — the full preview session", () => {
       "SV-103,goat,Nanny,,Boer,,2024-01-01,active,,Two kids",
       "SV-102,cattle,Duplicate,,,2020-01-01,,,,", // dup-in-file
     ].join("\n");
-    const mapped = defaultMapping(["tag_number", "species", "name", "sex", "breed", "birth_date", "acquisition_date", "status", "pasture", "notes"]);
     const data = parseCsvWithLimits(csv).ok ? (parseCsvWithLimits(csv) as { ok: true; headers: string[]; data: string[][] }).data : [];
     const session = buildReviewSession({
       headers: parseCsvWithLimits(csv).ok ? (parseCsvWithLimits(csv) as { ok: true; headers: string[]; data: string[][] }).headers : [],

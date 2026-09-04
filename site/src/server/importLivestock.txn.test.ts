@@ -20,6 +20,7 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { runMigrations } from "../../db/migrate";
 import { closeDb, sql } from "~/db";
+import type { ImportColumnMapping } from "~/types/importLivestock";
 import {
   buildReviewSession,
   parseCsvWithLimits,
@@ -51,7 +52,7 @@ const CSV = [
   "SV-204,sheep,Wooly,castrated,Merino,,,active,Pasture 3,",
 ].join("\n");
 
-const FULL_MAPPING = [
+const FULL_MAPPING: ImportColumnMapping[] = [
   { column: "tag_number", field: "tag_number" },
   { column: "species", field: "species" },
   { column: "name", field: "name" },
@@ -113,9 +114,9 @@ describe("preview-before-write — the parse/review path writes NOTHING", () => 
     expect(session.rows.every((r) => r.status === "ready")).toBe(true);
     expect(session.rows.length).toBe(4);
 
-    const animals = await db<{ n: number }>`SELECT count(*)::int AS n FROM animals WHERE ranch_id = ${opId}`;
+    const animals = await db<{ n: number }[]>`SELECT count(*)::int AS n FROM animals WHERE ranch_id = ${opId}`;
     expect(Number(animals[0].n)).toBe(0); // NOTHING written at preview
-    const audits = await db<{ n: number }>`SELECT count(*)::int AS n FROM livestock_imports WHERE operation_id = ${opId}`;
+    const audits = await db<{ n: number }[]>`SELECT count(*)::int AS n FROM livestock_imports WHERE operation_id = ${opId}`;
     expect(Number(audits[0].n)).toBe(0);
   });
 });
@@ -183,7 +184,7 @@ describe("commitLivestockImportCore — all-or-nothing + exclusions", () => {
     const animals = await db<{ tag_number: string }[]>`
       SELECT tag_number FROM animals WHERE ranch_id = ${opId} ORDER BY tag_number`;
     expect(animals.map((a) => a.tag_number)).toEqual(["SV-201"]);
-    const audits = await db<{ n: number }>`SELECT count(*)::int AS n FROM livestock_imports WHERE operation_id = ${opId}`;
+    const audits = await db<{ n: number }[]>`SELECT count(*)::int AS n FROM livestock_imports WHERE operation_id = ${opId}`;
     expect(Number(audits[0].n)).toBe(0);
   });
 
@@ -209,9 +210,9 @@ describe("commitLivestockImportCore — all-or-nothing + exclusions", () => {
     if (!out.ok) throw new Error(out.error);
     expect(out.imported).toBe(4);
 
-    const animals = await db<{ n: number }>`SELECT count(*)::int AS n FROM animals WHERE ranch_id = ${opId}`;
+    const animals = await db<{ n: number }[]>`SELECT count(*)::int AS n FROM animals WHERE ranch_id = ${opId}`;
     expect(Number(animals[0].n)).toBe(4);
-    const audits = await db<{ n: number }>`SELECT count(*)::int AS n FROM livestock_imports WHERE operation_id = ${opId} AND status = 'completed'`;
+    const audits = await db<{ n: number }[]>`SELECT count(*)::int AS n FROM livestock_imports WHERE operation_id = ${opId} AND status = 'completed'`;
     expect(Number(audits[0].n)).toBe(1);
   });
 });

@@ -42,7 +42,6 @@ import { ANIMAL_STATUSES, SEXES, SPECIES } from "~/types/livestock";
 import {
   IMPORT_FIELDS,
   IMPORT_MAX_BREED,
-  IMPORT_MAX_BYTES,
   IMPORT_MAX_NAME,
   IMPORT_MAX_NOTES,
   IMPORT_MAX_PASTURE,
@@ -53,6 +52,7 @@ import {
   type ImportField,
   type ImportPrevious,
   type ImportReviewRow,
+  type ImportRowStatus,
   type ImportRowValue,
   type LivestockImportResult,
   type LivestockImportSession,

@@ -19,6 +19,7 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { runMigrations } from "../../db/migrate";
 import { closeDb, sql } from "~/db";
+import type { ImportColumnMapping } from "~/types/importLivestock";
 import {
   commitLivestockImportCore,
   existingTagsForOperation,
@@ -47,7 +48,7 @@ const CSV = [
   "SV-103,goat,Nanny,female,Boer,,2024-01-01,active,,Two kids",
 ].join("\n");
 
-const FULL_MAPPING = [
+const FULL_MAPPING: ImportColumnMapping[] = [
   { column: "tag_number", field: "tag_number" },
   { column: "species", field: "species" },
   { column: "name", field: "name" },
@@ -131,7 +132,7 @@ describe("commitLivestockImportCore — happy path + audit", () => {
     expect(prev).not.toBeNull();
     expect(prev?.importedRows).toBe(3);
     expect(prev?.filename).toBe("herd.csv");
-    expect(prev?.createdAt).toBeTruthy();
+    expect(prev?.createdAt).toBeDefined();
   });
 
   test("Ranch B sees zero audit rows and zero animals from Ranch A (isolation)", async () => {
@@ -169,7 +170,7 @@ describe("commitLivestockImportCore — happy path + audit", () => {
 
 describe("commitLivestockImportCore — duplicate-import fingerprint gate", () => {
   test("re-importing the same file WITHOUT accepted is refused and writes nothing", async () => {
-    const before = await db<{ n: number }>`SELECT count(*)::int AS n FROM animals WHERE ranch_id = ${opAId}`;
+    const before = await db<{ n: number }[]>`SELECT count(*)::int AS n FROM animals WHERE ranch_id = ${opAId}`;
     const out = await commitLivestockImportCore({
       csvText: CSV,
       mapping: FULL_MAPPING,
@@ -183,7 +184,7 @@ describe("commitLivestockImportCore — duplicate-import fingerprint gate", () =
     });
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.error).toContain("already imported");
-    const after = await db<{ n: number }>`SELECT count(*)::int AS n FROM animals WHERE ranch_id = ${opAId}`;
+    const after = await db<{ n: number }[]>`SELECT count(*)::int AS n FROM animals WHERE ranch_id = ${opAId}`;
     expect(Number(after[0].n)).toBe(Number(before[0].n)); // nothing written
   });
 
@@ -206,7 +207,7 @@ describe("commitLivestockImportCore — duplicate-import fingerprint gate", () =
     // duplicated). No new animals exist.
     expect(out.imported).toBe(0);
     expect(out.skipped).toBe(3);
-    const animals = await db<{ n: number }>`SELECT count(*)::int AS n FROM animals WHERE ranch_id = ${opAId}`;
+    const animals = await db<{ n: number }[]>`SELECT count(*)::int AS n FROM animals WHERE ranch_id = ${opAId}`;
     expect(Number(animals[0].n)).toBe(3);
     // A second completed audit row exists (the operator chose to re-import).
     const audits = await db`SELECT id FROM livestock_imports WHERE operation_id = ${opAId} AND status = 'completed'`;

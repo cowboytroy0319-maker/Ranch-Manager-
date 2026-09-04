@@ -33,7 +33,6 @@ import {
   IMPORT_FIELD_LABEL,
   IMPORT_MAX_BYTES,
   IMPORT_ROW_STATUSES,
-  type ImportColumnMapping,
   type ImportField,
   type ImportReviewRow,
   type LivestockImportResult,
@@ -54,7 +53,6 @@ export const Route = createFileRoute("/onboarding/import")({
 
 const btnCls =
   "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60";
-const primaryBtn = `${btnCls} bg-green-800 text-white hover:bg-green-900 active:bg-green-950 disabled:bg-green-300`;
 const outlineBtn = `${btnCls} border border-stone-300 bg-white text-stone-700 hover:bg-stone-50 active:bg-stone-100`;
 
 const statusBadgeTone: Record<string, "green" | "amber" | "red" | "stone" | "blue"> = {
@@ -113,7 +111,6 @@ function ImportPage() {
   const rows = session?.rows ?? [];
   const counts = statusCounts(rows);
   const dupRows = rows.filter((r) => r.status === "dup-in-file" || r.status === "dup-existing");
-  const readyCount = counts.ready ?? 0;
   const hasPrevious = session?.prevImport != null;
 
   const readFileText = (f: File): Promise<string> =>

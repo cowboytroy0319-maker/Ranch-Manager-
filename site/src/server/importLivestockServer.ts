@@ -8,22 +8,10 @@
 import { createHash } from "node:crypto";
 import { isDatabaseConfigured, sql } from "~/db";
 import { requireAuth } from "./authServer";
-import { ANIMAL_STATUSES, SEXES, SPECIES } from "~/types/livestock";
 import {
-  IMPORT_FIELDS,
-  IMPORT_MAX_BREED,
   IMPORT_MAX_BYTES,
-  IMPORT_MAX_NAME,
-  IMPORT_MAX_NOTES,
-  IMPORT_MAX_PASTURE,
-  IMPORT_MAX_ROWS,
-  IMPORT_MAX_TAG,
-  IMPORT_ROW_STATUSES,
   type ImportColumnMapping,
-  type ImportField,
   type ImportPrevious,
-  type ImportReviewRow,
-  type ImportRowValue,
   type LivestockImportResult,
   type LivestockImportSession,
 } from "~/types/importLivestock";
@@ -106,6 +94,8 @@ export type CommitInput = {
   /** The full parsed CSV text — re-derived from the SAME original bytes the
    *  parse step saw (the client holds the file; nothing is stored). */
   csvText: string;
+  /** The original upload filename — recorded in the audit row. */
+  filename: string;
   /** The header → field mapping the owner confirmed in step 2. */
   mapping: ImportColumnMapping[];
   /** Indices (0-based data row numbers) the owner toggled OFF in review. */
@@ -323,7 +313,7 @@ export async function importLivestockCommitCore(data: CommitInputData): Promise<
       findPreviousImport,
     });
     if (!outcome.ok) return { ok: false, error: outcome.error };
-    return { ok: true, ...outcome };
+    return outcome;
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Import failed — no rows were written." };
   }
