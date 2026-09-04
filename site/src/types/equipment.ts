@@ -113,7 +113,7 @@ export function meterLabel(eq: EquipmentItem): string {
 
 export function fmtDollars(cents: number | null): string {
   if (cents == null) return "—";
-  return `${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 /** Auto-computed total cost of a fuel fill in cents: gallons × price per
