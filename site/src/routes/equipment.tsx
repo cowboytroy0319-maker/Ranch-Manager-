@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { getEquipmentData } from "~/server/equipment";
 import { EquipmentFormModal } from "~/components/equipment/EquipmentModals";
+import { LogFuelModal, LogServiceModal } from "~/components/equipment/TrackingModals";
 import {
   CATEGORY_LABEL,
   assetStatus,
@@ -44,6 +45,8 @@ function EquipmentPage() {
 
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<EquipmentItem | null>(null);
+  const [fuelOpen, setFuelOpen] = useState(false);
+  const [serviceOpen, setServiceOpen] = useState(false);
 
   const board = useMemo(
     () =>
@@ -195,9 +198,17 @@ function EquipmentPage() {
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CardTitle title="Equipment & vehicles" sub="Fleet register with meter, condition, and service status" />
-          <button onClick={() => { setEditing(null); setAddOpen(true); }} className="btn-primary !px-4 !py-2 text-sm">
-            + Add equipment
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => { setEditing(null); setFuelOpen(true); }} className="btn-outline !px-4 !py-2 text-sm">
+              ⛽ + Log fuel
+            </button>
+            <button onClick={() => { setEditing(null); setServiceOpen(true); }} className="btn-outline !px-4 !py-2 text-sm">
+              🔧 + Add service
+            </button>
+            <button onClick={() => { setEditing(null); setAddOpen(true); }} className="btn-primary !px-4 !py-2 text-sm">
+              + Add equipment
+            </button>
+          </div>
         </div>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full min-w-3xl text-left text-sm">
@@ -255,8 +266,7 @@ function EquipmentPage() {
               {data.equipment.length === 0 && (
                 <tr>
                   <td colSpan={8} className="py-8 text-center text-sm text-stone-500">
-                    No equipment registered yet — hit “+ Add equipment” above, or run{" "}
-                    <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">bun run db:seed</code> for the demo fleet.
+                    No equipment registered yet — add your first unit with “+ Add equipment” above.
                   </td>
                 </tr>
               )}
@@ -272,6 +282,9 @@ function EquipmentPage() {
           sub={`${data.fuel.length} refuels on record · latest first`}
           right={
             <div className="flex flex-wrap gap-2">
+              <button onClick={() => { setEditing(null); setFuelOpen(true); }} className="btn-outline !px-3 !py-1.5 text-xs">
+                ⛽ + Log fuel
+              </button>
               <Badge tone="blue">{fuel.gallons.toLocaleString(undefined, { maximumFractionDigits: 0 })} gal total</Badge>
               <Badge tone="blue">{fmtDollars(fuel.cost)} total</Badge>
             </div>
@@ -279,7 +292,7 @@ function EquipmentPage() {
         />
         {data.fuel.length === 0 ? (
           <p className="rounded-xl border border-dashed border-stone-300 p-4 text-center text-sm text-stone-500">
-            No refuels logged yet — start at the pump to build the fuel-cost record.
+            No fuel logs yet — log your first fill-up with “+ Log fuel” above.
           </p>
         ) : (
           <div className="grid gap-5 lg:grid-cols-3">
@@ -337,11 +350,18 @@ function EquipmentPage() {
 
       {/* Maintenance history */}
       <Card>
-        <CardTitle title="Service & maintenance" sub={`${data.maintenance.length} records · latest first`} />
+        <CardTitle
+          title="Service & maintenance"
+          sub={`${data.maintenance.length} records · latest first`}
+          right={
+            <button onClick={() => { setEditing(null); setServiceOpen(true); }} className="btn-outline !px-3 !py-1.5 text-xs">
+              🔧 + Add service
+            </button>
+          }
+        />
         {data.maintenance.length === 0 ? (
           <p className="rounded-xl border border-dashed border-stone-300 p-4 text-center text-sm text-stone-500">
-            No service records yet — or run{" "}
-            <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">bun run db:seed</code> for the demo history.
+            No service records yet — add your first service with “+ Add service” above.
           </p>
         ) : (
           <div className="mt-2 space-y-4">
@@ -412,6 +432,22 @@ function EquipmentPage() {
           onSaved={() => { setEditing(null); setAddOpen(false); refresh(); }}
         />
       ) : null}
+
+      {/* Log fuel / add service — one-column mobile forms, saved → refresh */}
+      {fuelOpen && (
+        <LogFuelModal
+          equipment={data.equipment}
+          onClose={() => setFuelOpen(false)}
+          onSaved={() => { setFuelOpen(false); refresh(); }}
+        />
+      )}
+      {serviceOpen && (
+        <LogServiceModal
+          equipment={data.equipment}
+          onClose={() => setServiceOpen(false)}
+          onSaved={() => { setServiceOpen(false); refresh(); }}
+        />
+      )}
     </Shell>
   );
 }
