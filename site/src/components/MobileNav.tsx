@@ -6,7 +6,7 @@
 // are ≥44px with labeled text (never icon-only).
 // ============================================================================
 import { Link, useLocation } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const BOTTOM_NAV = [
   { to: "/dashboard", label: "Dashboard", emoji: "🌅" },
@@ -28,6 +28,27 @@ export const MORE_NAV = [
 /** Serialized localStorage key for the "More" sheet expanded state. */
 const MORE_STATE_KEY = "rmp_bottom_more_open";
 
+/**
+ * Pure decision helper for closing the More drawer after navigation.
+ * `nextPath` is the pathname the router just navigated to; the drawer closes
+ * when the route actually changed (mobile taps navigate to a different route
+ * in this app — every Quick Add target, and every More row, is a distinct
+ * path or query on one). A same-path navigation (e.g. /livestock?add=event)
+ * keeps the drawer open, which is exactly the pre-existing behavior: the
+ * old code closed on every row tap with no path guard.
+ */
+export function shouldCloseMoreDrawer(prevPath: string, nextPath: string): boolean {
+  return prevPath !== nextPath;
+}
+
+function persistMoreState(next: boolean) {
+  try {
+    window.localStorage.setItem(MORE_STATE_KEY, next ? "1" : "0");
+  } catch {
+    /* private mode etc. — sheet still works for the session */
+  }
+}
+
 function useMoreOpen() {
   const [open, setOpen] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
@@ -40,15 +61,18 @@ function useMoreOpen() {
   const toggle = () => {
     setOpen((v) => {
       const next = !v;
-      try {
-        window.localStorage.setItem(MORE_STATE_KEY, next ? "1" : "0");
-      } catch {
-        /* private mode etc. — sheet still works for the session */
-      }
+      persistMoreState(next);
       return next;
     });
   };
-  return { open, toggle };
+  const close = () => {
+    setOpen((v) => {
+      if (!v) return v;
+      persistMoreState(false);
+      return false;
+    });
+  };
+  return { open, toggle, close };
 }
 
 export function QuickAddSheet({
@@ -116,8 +140,24 @@ export function QuickAddSheet({
  */
 export function MobileBottomNav() {
   const { pathname } = useLocation();
-  const { open: moreOpen, toggle: toggleMore } = useMoreOpen();
+  const { open: moreOpen, toggle: toggleMore, close: closeMore } = useMoreOpen();
   const [qaOpen, setQaOpen] = useState(false);
+  const prevPathname = useRef<string>(pathname);
+
+  // Close the More drawer after navigation completes. The drawer rows must
+  // NOT close the drawer in their own onClick (they used to, and the grid
+  // unmounted synchronously before the router navigated — iOS canceled the
+  // tap because the target vanished mid-gesture, so no More row navigated).
+  // Instead, rows stay stable tap targets and the drawer closes on the
+  // pathname change — same UX, no race. Guarded to path changes only; a
+  // same-path query navigation (Quick Add from an already-open drawer) keeps
+  // the drawer open, matching the pre-fix behavior of a plain Link.
+  useEffect(() => {
+    if (prevPathname.current !== pathname) {
+      closeMore();
+      prevPathname.current = pathname;
+    }
+  }, [pathname, closeMore]);
 
   const primary = BOTTOM_NAV.map((item) => {
     const active = pathname === item.to || (item.to === "/dashboard" && pathname === "/");
@@ -183,7 +223,6 @@ export function MobileBottomNav() {
               <Link
                 key={item.to}
                 to={item.to}
-                onClick={() => toggleMore()}
                 className={`flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition ${
                   pathname === item.to
                     ? "bg-green-800 text-white"
