@@ -116,6 +116,14 @@ export function fmtDollars(cents: number | null): string {
   return `$${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** Auto-computed total cost of a fuel fill in cents: gallons × price per
+ * gallon. Returns NaN while the form is still half-typed (callers show "—" for
+ * NaN); never negative. */
+export function fuelTotalCents(gallons: number, pricePerGal: number): number {
+  if (!Number.isFinite(gallons) || !Number.isFinite(pricePerGal)) return Number.NaN;
+  return Math.max(0, Math.round(gallons * pricePerGal * 100));
+}
+
 /** True when a maintenance record's next-due has been reached or passed given
  * the asset's current meter (hours/miles) or the calendar date. */
 function nextDueReached(m: MaintenanceRecord, eq: EquipmentItem): boolean {
