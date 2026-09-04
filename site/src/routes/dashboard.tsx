@@ -8,6 +8,7 @@ import { EquipmentSnapshot } from "~/components/dashboard/EquipmentSnapshot";
 import { CostsSnapshot } from "~/components/dashboard/CostsSnapshot";
 import { CalendarSnapshot } from "~/components/dashboard/CalendarSnapshot";
 import { TaxSnapshot } from "~/components/dashboard/TaxSnapshot";
+import { TasksSnapshot } from "~/components/dashboard/TasksSnapshot";
 import { getLivestockData } from "~/server/livestock";
 import { getTaxExemptionsData } from "~/server/taxExemptions";
 import { getFeedData } from "~/server/feed";
@@ -15,6 +16,7 @@ import { getPastureData } from "~/server/pasture";
 import { getEquipmentData } from "~/server/equipment";
 import { getCostData } from "~/server/costs";
 import { getExpensesData } from "~/server/expenses";
+import { getDashboardTasks } from "~/server/tasks";
 import { getSession } from "~/server/auth";
 
 export const Route = createFileRoute("/dashboard")({
@@ -25,7 +27,7 @@ export const Route = createFileRoute("/dashboard")({
 
   // Load every real dataset behind the Daily Operations board in one round trip.
   loader: async () => {
-    const [livestock, feed, pasture, equipment, costs, expenses, tax] = await Promise.all([
+    const [livestock, feed, pasture, equipment, costs, expenses, tax, tasks] = await Promise.all([
       getLivestockData(),
       getFeedData(),
       getPastureData(),
@@ -33,14 +35,15 @@ export const Route = createFileRoute("/dashboard")({
       getCostData(),
       getExpensesData(),
       getTaxExemptionsData(),
+      getDashboardTasks(),
     ]);
-    return { livestock, feed, pasture, equipment, costs, expenses, tax };
+    return { livestock, feed, pasture, equipment, costs, expenses, tax, tasks };
   },
   component: Dashboard,
 });
 
 function Dashboard() {
-  const { livestock, feed, pasture, equipment, costs, expenses, tax } = Route.useLoaderData();
+  const { livestock, feed, pasture, equipment, costs, expenses, tax, tasks } = Route.useLoaderData();
 
   // Live headline numbers: active head from livestock, fuel spend this month.
   const activeHead = livestock.animals.filter((a) => a.status === "active").length;
@@ -112,6 +115,8 @@ function Dashboard() {
         </div>
         {/* 1. Today's priorities */}
         <MorningBriefing data={{ livestock, feed, pasture, equipment }} />
+        {/* 1b. Today's tasks — overdue/due-today/high-priority open work */}
+        <TasksSnapshot tasks={tasks.tasks} />
         {/* 2-3. Livestock + Feed */}
         <div className="grid gap-6 lg:grid-cols-2">
           <LivestockSnapshot data={livestock} />

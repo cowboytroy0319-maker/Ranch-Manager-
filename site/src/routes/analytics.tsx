@@ -1,4 +1,4 @@
-import { Link, createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { getAnalyticsData } from "~/server/analytics";
 import { getSession } from "~/server/auth";

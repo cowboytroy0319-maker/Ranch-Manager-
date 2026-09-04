@@ -55,6 +55,7 @@ Production (self-host): `bun run build && bun run start` (serves via `serve.ts`)
 - `/expenses` — cost allocation to herd/lot, pasture, equipment, job, category → cost per head/acre/bale/mile
 - `/employees` — crew, roles, pay types, schedule
 - `/tax-exemptions` — tax exemption records
+- `/tasks` — daily task list & projects: quick-add (title/due/priority/category, expandable details), filters by status/priority/due/category/project, one-tap complete/reopen, inline edit, projects panel; feeds the dashboard's "Today's tasks" card (see `docs/TASKS_MODULE.md`)
 - `/analytics` — self-hosted site analytics (page views, unique visitors, referrers)
 - `/blog/...` — content pages; `/worksheet` — free lead-magnet worksheet
 - Checkout — Stripe subscription tiers: Herd $15 / Ranch $30 / Manager $75 / Legacy $200 (annual = pay 11 months)
@@ -82,7 +83,7 @@ Accounts are real per-ranch logins (migration `0014_auth_users_operations.sql`):
 
 ## Database schema (`db/migrations/`, idempotent)
 
-21 tables across 13 migrations: `operations`, `herd_groups`, `animals`, `health_events`, `hay_inventory`, `feed_inventory`, `usage_log`, `pastures`, `pasture_assignments`, `grazing_log`, `pasture_observations`, `equipment`, `maintenance_records`, `fuel_log`, `subscription_events`, `app_settings`, `expenses`, `page_views`, `subscribers`, `employees`, `tax_exemptions`. (Migration `0014` adds `users`, `operation_memberships`, `sessions` and the `operation_id` scoping columns; see "Authentication & ranch isolation" above.)
+21 tables across 14 migrations: `operations`, `herd_groups`, `animals`, `health_events`, `hay_inventory`, `feed_inventory`, `usage_log`, `pastures`, `pasture_assignments`, `grazing_log`, `pasture_observations`, `equipment`, `maintenance_records`, `fuel_log`, `subscription_events`, `app_settings`, `expenses`, `page_views`, `subscribers`, `employees`, `tax_exemptions`, `projects`, `tasks`. (Migration `0014` adds `users`, `operation_memberships`, `sessions` and the `operation_id` scoping columns; migration `0015` adds the tasks & projects tables — both are applied to prod separately. See "Authentication & ranch isolation" above and `docs/TASKS_MODULE.md`.)
 
 Important: `0006_app_settings.sql` seeds a `stripe_webhook_secret` row — in this repository the value is a **placeholder** (`whsec_REPLACE_ME_EXAMPLE_ONLY`). Supply your real secret via the `STRIPE_WEBHOOK_SECRET` env var (the webhook handler reads env first, then the DB row as a fallback). The live production database already holds the correct value; fresh installs must set the env var or update the row.
 

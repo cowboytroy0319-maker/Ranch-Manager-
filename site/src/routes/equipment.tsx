@@ -1,9 +1,10 @@
-import { Link, createFileRoute, redirect } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { getEquipmentData } from "~/server/equipment";
+import { EquipmentFormModal } from "~/components/equipment/EquipmentModals";
 import {
   CATEGORY_LABEL,
   assetStatus,
@@ -38,6 +39,11 @@ const conditionTone = (c: string | null): "red" | "amber" | "green" =>
 
 function EquipmentPage() {
   const data = Route.useLoaderData();
+  const router = useRouter();
+  const refresh = () => router.invalidate();
+
+  const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState<EquipmentItem | null>(null);
 
   const board = useMemo(
     () =>
@@ -187,7 +193,12 @@ function EquipmentPage() {
 
       {/* Equipment status board */}
       <Card>
-        <CardTitle title="Equipment & vehicles" sub="Fleet register with meter, condition, and service status" />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <CardTitle title="Equipment & vehicles" sub="Fleet register with meter, condition, and service status" />
+          <button onClick={() => { setEditing(null); setAddOpen(true); }} className="btn-primary !px-4 !py-2 text-sm">
+            + Add equipment
+          </button>
+        </div>
         <div className="mt-2 overflow-x-auto">
           <table className="w-full min-w-3xl text-left text-sm">
             <thead>
@@ -198,7 +209,8 @@ function EquipmentPage() {
                 <th className="py-2 pr-3">Condition</th>
                 <th className="py-2 pr-3">Next service</th>
                 <th className="py-2 pr-3">Location</th>
-                <th className="py-2">Status</th>
+                <th className="py-2 pr-3">Status</th>
+                <th className="py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-stone-100">
@@ -230,12 +242,20 @@ function EquipmentPage() {
                   <td className="py-2.5 pr-3">
                     <Badge tone={statusTone(status)}>{statusLabel[status]}</Badge>
                   </td>
+                  <td className="py-2.5 text-right">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setEditing(eq); }}
+                      className="rounded-lg border border-stone-200 px-2.5 py-1 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
+                    >
+                      Edit
+                    </button>
+                  </td>
                 </tr>
               ))}
               {data.equipment.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-8 text-center text-sm text-stone-500">
-                    No equipment registered yet — or run{" "}
+                  <td colSpan={8} className="py-8 text-center text-sm text-stone-500">
+                    No equipment registered yet — hit “+ Add equipment” above, or run{" "}
                     <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">bun run db:seed</code> for the demo fleet.
                   </td>
                 </tr>
@@ -382,6 +402,16 @@ function EquipmentPage() {
           </div>
         )}
       </Card>
+
+      {/* Add / edit equipment modal — same wiring as pasture: save → invalidate */}
+      {addOpen || editing ? (
+        <EquipmentFormModal
+          key={editing ? `edit-${editing.id}` : "add-equipment"}
+          editing={editing}
+          onClose={() => { setEditing(null); setAddOpen(false); }}
+          onSaved={() => { setEditing(null); setAddOpen(false); refresh(); }}
+        />
+      ) : null}
     </Shell>
   );
 }

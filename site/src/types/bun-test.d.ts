@@ -17,6 +17,7 @@ interface BunTestExpect<T> {
   toBeNull(): void;
   toThrow(message?: string | RegExp): void;
   toContain(item: unknown): void;
+  toMatch(regex: RegExp): void;
   // Matchers used by the auth integration tests (negation + presence).
   not: BunTestExpect<T>;
   toBeDefined(): void;
