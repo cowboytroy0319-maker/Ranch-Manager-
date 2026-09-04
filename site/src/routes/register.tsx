@@ -15,7 +15,7 @@ export function RegisterPage() {
     });
     if (!res.ok) return res.error;
     await router.invalidate();
-    void navigate({ to: "/dashboard" });
+    void navigate({ to: "/onboarding", search: { new: "1" } });
     return null;
   });
 

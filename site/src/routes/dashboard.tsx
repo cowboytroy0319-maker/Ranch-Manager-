@@ -17,6 +17,8 @@ import { getEquipmentData } from "~/server/equipment";
 import { getCostData } from "~/server/costs";
 import { getExpensesData } from "~/server/expenses";
 import { getDashboardTasks } from "~/server/tasks";
+import { getOnboarding } from "~/server/onboarding";
+import { SetupProgressCard } from "~/components/dashboard/SetupProgressCard";
 import { getSession } from "~/server/auth";
 
 export const Route = createFileRoute("/dashboard")({
@@ -27,7 +29,7 @@ export const Route = createFileRoute("/dashboard")({
 
   // Load every real dataset behind the Daily Operations board in one round trip.
   loader: async () => {
-    const [livestock, feed, pasture, equipment, costs, expenses, tax, tasks] = await Promise.all([
+    const [livestock, feed, pasture, equipment, costs, expenses, tax, tasks, onboarding] = await Promise.all([
       getLivestockData(),
       getFeedData(),
       getPastureData(),
@@ -36,14 +38,15 @@ export const Route = createFileRoute("/dashboard")({
       getExpensesData(),
       getTaxExemptionsData(),
       getDashboardTasks(),
+      getOnboarding(),
     ]);
-    return { livestock, feed, pasture, equipment, costs, expenses, tax, tasks };
+    return { livestock, feed, pasture, equipment, costs, expenses, tax, tasks, onboarding };
   },
   component: Dashboard,
 });
 
 function Dashboard() {
-  const { livestock, feed, pasture, equipment, costs, expenses, tax, tasks } = Route.useLoaderData();
+  const { livestock, feed, pasture, equipment, costs, expenses, tax, tasks, onboarding } = Route.useLoaderData();
 
   // Live headline numbers: active head from livestock, fuel spend this month.
   const activeHead = livestock.animals.filter((a) => a.status === "active").length;
@@ -90,6 +93,9 @@ function Dashboard() {
           <Link to="/analytics" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
             Analytics
           </Link>
+          <Link to="/onboarding/templates" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
+            Templates
+          </Link>
           <Link to="/demo" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
             Demo modules
           </Link>
@@ -113,6 +119,8 @@ function Dashboard() {
             <Badge tone="stone">{costs.fuel ? `$${(fuelCents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} fuel this month` : "no fuel logged this month"}</Badge>
           </div>
         </div>
+        {/* 0. Setup progress (hidden when done) — never traps the user */}
+        <SetupProgressCard data={onboarding} />
         {/* 1. Today's priorities */}
         <MorningBriefing data={{ livestock, feed, pasture, equipment }} />
         {/* 1b. Today's tasks — overdue/due-today/high-priority open work */}

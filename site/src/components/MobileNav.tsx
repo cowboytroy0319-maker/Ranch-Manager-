@@ -21,6 +21,7 @@ export const MORE_NAV = [
   { to: "/expenses", label: "Expenses", emoji: "🧾" },
   { to: "/employees", label: "Employees", emoji: "👷" },
   { to: "/tax-exemptions", label: "Tax Exemptions", emoji: "📄" },
+  { to: "/onboarding/templates", label: "Templates", emoji: "📋" },
 ] as const;
 
 /** Serialized localStorage key for the "More" sheet expanded state. */
@@ -133,7 +134,15 @@ export function MobileBottomNav() {
     );
   });
 
-  const isQaActive = pathname === "/livestock" || pathname === "/feed" || pathname === "/pasture" || pathname === "/equipment" || pathname === "/expenses" || pathname === "/employees" || pathname === "/tax-exemptions";
+  const isQaActive =
+    pathname === "/livestock" ||
+    pathname === "/feed" ||
+    pathname === "/pasture" ||
+    pathname === "/equipment" ||
+    pathname === "/expenses" ||
+    pathname === "/employees" ||
+    pathname === "/tax-exemptions" ||
+    pathname.startsWith("/onboarding");
 
   return (
     <>

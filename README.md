@@ -56,6 +56,9 @@ Production (self-host): `bun run build && bun run start` (serves via `serve.ts`)
 - `/employees` — crew, roles, pay types, schedule
 - `/tax-exemptions` — tax exemption records
 - `/tasks` — daily task list & projects: quick-add (title/due/priority/category, expandable details), filters by status/priority/due/category/project, one-tap complete/reopen, inline edit, projects panel; feeds the dashboard's "Today's tasks" card (see `docs/TASKS_MODULE.md`)
+- `/onboarding` — post-registration setup flow: edit ranch name/location/operation type/acres/primary species, start fresh, download starter CSV templates, or see the import placeholder (coming soon; import is a later item); never traps — "Skip for now" and the bottom nav stay available, partial saves persist (see `docs/ONBOARDING_TEMPLATES.md`)
+- `/onboarding/templates` — the six downloadable CSV starter templates (livestock, pastures, hay/feed, equipment, expenses, tasks) with field legends; real Blob + anchor downloads, authenticated
+- `/onboarding/import` — clearly-marked "coming soon" placeholder — no import functionality is built yet
 - `/analytics` — self-hosted site analytics (page views, unique visitors, referrers)
 - `/blog/...` — content pages; `/worksheet` — free lead-magnet worksheet
 - Checkout — Stripe subscription tiers: Herd $15 / Ranch $30 / Manager $75 / Legacy $200 (annual = pay 11 months)
@@ -68,7 +71,7 @@ Accounts are real per-ranch logins (migration `0014_auth_users_operations.sql`):
 - **One ranch/operation per account, owner role.** `registerCore` always creates a **new** `operations` row named by the customer plus one `operation_memberships` row with role `owner`. A registered user never lands on the seeded "Default Operation" and never sees its demo data. Crew invites (worker/viewer roles) are a later milestone.
 - **Every operational module is scoped by the session operation.** Each read/write server fn (`getFeedData`, `saveHay`, `logUsage`, `saveAnimal`, `getLivestockData`, `getPastureData`, `getEquipmentData`, `getCostData`, `getExpensesData`, `getEmployeesData`, `getTaxExemptionsData`, ...) calls `requireAuth()` first, then filters every query by `auth.operationId`; writes additionally guard their `UPDATE/INSERT ... WHERE operation_id` so a cross-ranch write affects zero rows and is rejected.
 - **No Default-Operation fallback for customer data.** Pre-existing/demo rows are backfilled onto the Default Operation by the migration; customer accounts get a fresh, empty operation. Sessionless requests are rejected (`requireAuth` throws "Not authenticated").
-- **Flows:** `/register` (ranch name + email + password → creates account + operation + owner session → `/dashboard`), `/login` (correct credentials → session → `/dashboard`; wrong password → "Incorrect email or password."), sign-out clears the session row and cookie.
+- **Flows:** `/register` (ranch name + email + password → creates account + operation + owner session → **`/onboarding?new=1`** post-registration setup), `/login` (correct credentials → session → `/dashboard`; wrong password → "Incorrect email or password."), sign-out clears the session row and cookie. The dashboard shows a "Finish ranch setup — N of 5 steps done" card (see `/onboarding` + `docs/ONBOARDING_TEMPLATES.md`) until onboarding is complete; setup can be skipped/edited anytime.
 
 ## Environment variables (NAMES only)
 
@@ -83,7 +86,7 @@ Accounts are real per-ranch logins (migration `0014_auth_users_operations.sql`):
 
 ## Database schema (`db/migrations/`, idempotent)
 
-21 tables across 14 migrations: `operations`, `herd_groups`, `animals`, `health_events`, `hay_inventory`, `feed_inventory`, `usage_log`, `pastures`, `pasture_assignments`, `grazing_log`, `pasture_observations`, `equipment`, `maintenance_records`, `fuel_log`, `subscription_events`, `app_settings`, `expenses`, `page_views`, `subscribers`, `employees`, `tax_exemptions`, `projects`, `tasks`. (Migration `0014` adds `users`, `operation_memberships`, `sessions` and the `operation_id` scoping columns; migration `0015` adds the tasks & projects tables — both are applied to prod separately. See "Authentication & ranch isolation" above and `docs/TASKS_MODULE.md`.)
+21 tables across 15 migrations: `operations`, `herd_groups`, `animals`, `health_events`, `hay_inventory`, `feed_inventory`, `usage_log`, `pastures`, `pasture_assignments`, `grazing_log`, `pasture_observations`, `equipment`, `maintenance_records`, `fuel_log`, `subscription_events`, `app_settings`, `expenses`, `page_views`, `subscribers`, `employees`, `tax_exemptions`, `projects`, `tasks`, `operation_profile`. (Migration `0014` adds `users`, `operation_memberships`, `sessions` and the `operation_id` scoping columns; migration `0015` adds the tasks & projects tables; migration `0016` adds `operation_profile` + nullable `onboarding_started_at`/`onboarding_completed_at` columns — all are applied to prod separately. See "Authentication & ranch isolation" above, `docs/TASKS_MODULE.md`, and `docs/ONBOARDING_TEMPLATES.md`.)
 
 Important: `0006_app_settings.sql` seeds a `stripe_webhook_secret` row — in this repository the value is a **placeholder** (`whsec_REPLACE_ME_EXAMPLE_ONLY`). Supply your real secret via the `STRIPE_WEBHOOK_SECRET` env var (the webhook handler reads env first, then the DB row as a fallback). The live production database already holds the correct value; fresh installs must set the env var or update the row.
 
