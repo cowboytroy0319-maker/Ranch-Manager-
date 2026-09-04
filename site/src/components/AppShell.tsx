@@ -8,6 +8,7 @@
 import { Link, useNavigate, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
 import { logout } from "~/server/auth";
+import { MobileBottomNav } from "~/components/MobileNav";
 
 export type NavItem = { to: string; label: string; emoji: string };
 
@@ -127,7 +128,7 @@ export function Shell({
           </nav>
         ) : (
           <nav
-            className="flex gap-1.5 overflow-x-auto border-t border-stone-200 px-3 py-2 md:px-6"
+            className="hidden gap-1.5 overflow-x-auto border-t border-stone-200 px-3 py-2 md:flex md:px-6"
             aria-label="Modules"
           >
             {APP_NAV.map((item) => (
@@ -150,7 +151,7 @@ export function Shell({
         )}
       </header>
 
-      <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 sm:py-8">
+      <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 pb-[max(1.25rem,calc(5.5rem+env(safe-area-inset-bottom)))] sm:px-6 sm:py-8 md:pb-8">
         <div>
           <p className="eyebrow">{eyebrow}</p>
           <h1 className="mt-1 text-3xl font-bold text-stone-900 sm:text-4xl">{title}</h1>
@@ -164,6 +165,7 @@ export function Shell({
           </Link>
         </footer>
       </main>
+      <MobileBottomNav />
     </div>
   );
 }

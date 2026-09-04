@@ -95,3 +95,51 @@ export function Stat({
     </Card>
   );
 }
+
+/** Labeled full-width field block used by the mobile create flows. Wraps any
+ * input/select/textarea; label sits above, child is full-width. */
+export function LabeledField({
+  label,
+  children,
+  hint,
+  className = "",
+}: {
+  label: string;
+  children: ReactNode;
+  hint?: string;
+  className?: string;
+}) {
+  return (
+    <div className={className}>
+      <label className="block text-xs font-semibold uppercase tracking-wide text-stone-500">{label}</label>
+      {children}
+      {hint && <p className="mt-1 text-xs text-stone-500">{hint}</p>}
+    </div>
+  );
+}
+
+/** Full-width labeled button — big tap target, never icon-only. */
+export function MobilePrimaryButton({
+  children,
+  type = "button",
+  onClick,
+  disabled = false,
+  className = "",
+}: {
+  children: ReactNode;
+  type?: "button" | "submit";
+  onClick?: () => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      className={`inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
+    >
+      {children}
+    </button>
+  );
+}

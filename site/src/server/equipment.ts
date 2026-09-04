@@ -10,10 +10,15 @@ import {
   EQUIPMENT_CATEGORIES,
   EQUIPMENT_STATUSES,
   FUEL_TYPES,
+  MAINT_STATUSES,
+  MAINT_TYPES,
   type EquipmentData,
   type EquipmentItem,
   type FuelEntry,
+  type FuelType,
   type MaintenanceRecord,
+  type MaintStatus,
+  type MaintType,
 } from "~/types/equipment";
 
 // ---------------------------------------------------------------------------
@@ -171,6 +176,130 @@ export const saveEquipment = createServerFn({ method: "POST" })
         VALUES (${auth.operationId}, ${e.name}, ${e.category}, ${e.make}, ${e.model}, ${e.year}, ${e.hours}, ${e.miles},
                 ${e.location}, ${e.fuel_type}, ${e.notes}, ${e.status})
         RETURNING id`;
+      return { ok: true, id: row.id };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+// ---------------------------------------------------------------------------
+// Validation + Write: log a fuel fill (insert only, operation-scoped)
+// ---------------------------------------------------------------------------
+const optInt = optionalInt;
+const isoDate = (v: unknown): string | null => {
+  const s = str(v);
+  if (!s) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(Date.parse(s))) {
+    throw new Error("Dates must be in YYYY-MM-DD format.");
+  }
+  return s;
+};
+const posNum = (v: unknown, field: string): number => {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${field} must be greater than zero.`);
+  return n;
+};
+export type FuelLogInput = {
+  equipment_id: number | null;
+  fuel_date: string;
+  fuel_type: FuelType;
+  gallons: number;
+  cost_cents: number | null;
+  location: string | null;
+  notes: string | null;
+};
+export function parseFuelLogInput(raw: unknown): FuelLogInput {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const date = isoDate(d.fuel_date);
+  if (!date) throw new Error("Fuel date is required (YYYY-MM-DD).");
+  return {
+    equipment_id: optInt(d.equipment_id),
+    fuel_date: date,
+    fuel_type: (oneOf(d.fuel_type, FUEL_TYPES as readonly string[]) ?? "diesel") as FuelType,
+    gallons: posNum(d.gallons, "Gallons"),
+    cost_cents: d.cost_cents === null || d.cost_cents === undefined || d.cost_cents === "" ? null : Math.max(0, Math.round(Number(d.cost_cents))),
+    location: str(d.location),
+    notes: str(d.notes),
+  };
+}
+export const logFuel = createServerFn({ method: "POST" })
+  .validator(parseFuelLogInput)
+  .handler(async ({ data: f }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
+    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    try {
+      const auth = await requireAuth();
+      const db = sql();
+      // Scope through the equipment: the machine must belong to this operation,
+      // or the INSERT ... SELECT affects 0 rows (cross-ranch mutation rejected).
+      // A NULL equipment_id is allowed (bulk tank top-up).
+      const [row] = await db<[{ id: number }]>`
+        INSERT INTO fuel_log (operation_id, equipment_id, fuel_date, fuel_type, gallons, cost_cents, location, notes)
+        SELECT ${auth.operationId}, CASE WHEN ${f.equipment_id}::int IS NULL THEN NULL ELSE ${f.equipment_id}::int END,
+               ${f.fuel_date}, ${f.fuel_type}, ${f.gallons}, ${f.cost_cents}, ${f.location}, ${f.notes}
+        WHERE ${f.equipment_id}::int IS NULL
+           OR EXISTS (SELECT 1 FROM equipment e WHERE e.id = ${f.equipment_id}::int AND e.operation_id = ${auth.operationId})
+        RETURNING id`;
+      if (!row) return { ok: false, error: "That equipment doesn't exist in this ranch." };
+      return { ok: true, id: row.id };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+// ---------------------------------------------------------------------------
+// Validation + Write: log a maintenance/service record (insert only)
+// ---------------------------------------------------------------------------
+export type MaintLogInput = {
+  equipment_id: number;
+  service_date: string;
+  service_type: MaintType;
+  description: string | null;
+  cost_cents: number | null;
+  meter_hours: number | null;
+  meter_miles: number | null;
+  status: MaintStatus;
+  next_due_date: string | null;
+  next_due_hours: number | null;
+  next_due_miles: number | null;
+  vendor: string | null;
+};
+export function parseMaintLogInput(raw: unknown): MaintLogInput {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const date = isoDate(d.service_date);
+  if (!date) throw new Error("Service date is required (YYYY-MM-DD).");
+  const eqId = optInt(d.equipment_id);
+  if (eqId === null) throw new Error("Pick the equipment this service is for.");
+  return {
+    equipment_id: eqId,
+    service_date: date,
+    service_type: oneOf(d.service_type, MAINT_TYPES) ?? "other",
+    description: str(d.description),
+    cost_cents: d.cost_cents === null || d.cost_cents === undefined || d.cost_cents === "" ? null : Math.max(0, Math.round(Number(d.cost_cents))),
+    meter_hours: nonNegativeNum(d.meter_hours, "Meter hours"),
+    meter_miles: nonNegativeNum(d.meter_miles, "Meter miles"),
+    status: oneOf(d.status, MAINT_STATUSES) ?? "done",
+    next_due_date: isoDate(d.next_due_date),
+    next_due_hours: nonNegativeNum(d.next_due_hours, "Next due hours"),
+    next_due_miles: nonNegativeNum(d.next_due_miles, "Next due miles"),
+    vendor: str(d.vendor),
+  };
+}
+export const logMaintenance = createServerFn({ method: "POST" })
+  .validator(parseMaintLogInput)
+  .handler(async ({ data: m }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
+    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    try {
+      const auth = await requireAuth();
+      const db = sql();
+      const [row] = await db<[{ id: number }]>`
+        INSERT INTO maintenance_records (operation_id, equipment_id, service_date, service_type, description,
+                                         cost_cents, meter_hours, meter_miles, status, next_due_date,
+                                         next_due_hours, next_due_miles, vendor)
+        SELECT ${auth.operationId}, ${m.equipment_id}, ${m.service_date}, ${m.service_type}, ${m.description},
+               ${m.cost_cents}, ${m.meter_hours}, ${m.meter_miles}, ${m.status}, ${m.next_due_date},
+               ${m.next_due_hours}, ${m.next_due_miles}, ${m.vendor}
+        FROM equipment e
+        WHERE e.id = ${m.equipment_id} AND e.operation_id = ${auth.operationId}
+        RETURNING id`;
+      if (!row) return { ok: false, error: "That equipment doesn't exist in this ranch." };
       return { ok: true, id: row.id };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

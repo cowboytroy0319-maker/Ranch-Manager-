@@ -10,6 +10,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import type { DimensionTotal, ExpenseData, ExpenseRow } from "~/types/expenses";
+import { EXPENSE_CATEGORIES, type ExpenseCategory } from "~/types/expenses";
 
 // Current-month scope: every aggregate and row below filters to the month the
 // DB clock says it currently is, so the dashboard always shows this month.
@@ -115,3 +116,78 @@ export const getExpensesData = createServerFn().handler(async (): Promise<Expens
     };
   }
 });
+// ---------------------------------------------------------------------------
+// Validation + Write: save expense (insert or update, operation-scoped)
+// ---------------------------------------------------------------------------
+const str0 = (v: unknown): string | null => {
+  const s = typeof v === "string" ? v.trim() : "";
+  return s.length ? s : null;
+};
+const oneOf0 = <T extends string>(v: unknown, allowed: readonly T[]): T | null =>
+  typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : null;
+const optionalInt0 = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+};
+export type ExpenseInput = {
+  id?: number;
+  expense_date: string;
+  category: ExpenseCategory;
+  amount_cents: number;
+  vendor: string | null;
+  herd_group_id: number | null;
+  pasture_id: number | null;
+  equipment_id: number | null;
+  job: string | null;
+  notes: string | null;
+};
+export function parseExpenseInput(raw: unknown): ExpenseInput {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const expenseDate = str0(d.expense_date);
+  if (!expenseDate || !/^\d{4}-\d{2}-\d{2}$/.test(expenseDate) || Number.isNaN(Date.parse(expenseDate))) {
+    throw new Error("Expense date must be a valid date (YYYY-MM-DD).");
+  }
+  const amount = Number(d.amount_cents);
+  if (!Number.isFinite(amount) || amount < 0) throw new Error("Expense amount can't be negative.");
+  const cents = Math.round(amount);
+  return {
+    id: optionalInt0(d.id) ?? undefined,
+    expense_date: expenseDate,
+    category: oneOf0(d.category, EXPENSE_CATEGORIES) ?? "other",
+    amount_cents: cents,
+    vendor: str0(d.vendor),
+    herd_group_id: optionalInt0(d.herd_group_id),
+    pasture_id: optionalInt0(d.pasture_id),
+    equipment_id: optionalInt0(d.equipment_id),
+    job: str0(d.job),
+    notes: str0(d.notes),
+  };
+}
+export const saveExpense = createServerFn({ method: "POST" })
+  .validator(parseExpenseInput)
+  .handler(async ({ data: e }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
+    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    try {
+      const auth = await requireAuth();
+      const db = sql();
+      if (e.id) {
+        const updated = await db`
+          UPDATE expenses SET expense_date=${e.expense_date}, category=${e.category},
+            amount_cents=${e.amount_cents}, vendor=${e.vendor}, herd_group_id=${e.herd_group_id},
+            pasture_id=${e.pasture_id}, equipment_id=${e.equipment_id}, job=${e.job}, notes=${e.notes}
+          WHERE id=${e.id} AND operation_id=${auth.operationId} RETURNING id`;
+        if (updated.length === 0) return { ok: false, error: `Expense #${e.id} no longer exists in this ranch.` };
+        return { ok: true, id: e.id };
+      }
+      const [row] = await db<[{ id: number }]>`
+        INSERT INTO expenses (operation_id, expense_date, category, amount_cents, vendor,
+                              herd_group_id, pasture_id, equipment_id, job, notes)
+        VALUES (${auth.operationId}, ${e.expense_date}, ${e.category}, ${e.amount_cents}, ${e.vendor},
+                ${e.herd_group_id}, ${e.pasture_id}, ${e.equipment_id}, ${e.job}, ${e.notes})
+        RETURNING id`;
+      return { ok: true, id: row.id };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });

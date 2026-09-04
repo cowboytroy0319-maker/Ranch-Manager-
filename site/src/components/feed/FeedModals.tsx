@@ -46,32 +46,46 @@ function Modal({
   onClose,
   children,
   wide = false,
+  footer,
 }: {
   title: string;
   sub?: string;
   onClose: () => void;
   children: React.ReactNode;
   wide?: boolean;
+  footer?: React.ReactNode;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-stone-900/50 p-3 sm:p-6" onClick={onClose}>
-      <Card className={`my-4 w-full ${wide ? "max-w-3xl" : "max-w-xl"} shadow-xl`}>
-        <div onClick={(e) => e.stopPropagation()}>
-          <div className="mb-4 flex items-start justify-between gap-3">
+    <div className="fixed inset-0 z-[60] flex items-end justify-center bg-stone-900/50 sm:items-center sm:p-6" onClick={onClose}>
+      <Card className={`flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-2xl shadow-xl sm:max-h-[90vh] sm:rounded-2xl ${wide ? "sm:max-w-3xl" : "sm:max-w-xl"}`}>
+        <div className="shrink-0 border-b border-stone-100 px-4 py-4 sm:px-6" onClick={(e) => e.stopPropagation()}>
+          <div className="mx-auto mb-2 h-1 w-10 rounded-full bg-stone-200 sm:hidden" />
+          <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="text-lg font-bold text-stone-900">{title}</h3>
               {sub && <p className="text-sm text-stone-500">{sub}</p>}
             </div>
             <button
               onClick={onClose}
-              className="rounded-lg border border-stone-200 px-2.5 py-1 text-sm text-stone-500 transition hover:bg-stone-100"
+              className="rounded-lg border border-stone-200 px-3 py-1.5 text-sm text-stone-600 transition hover:bg-stone-100"
               aria-label="Close"
             >
               ✕
             </button>
           </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6" onClick={(e) => e.stopPropagation()}>
           {children}
         </div>
+        {footer && (
+          <div
+            className="shrink-0 border-t border-stone-100 bg-white px-4 py-3 sm:px-6"
+            style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {footer}
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -132,8 +146,18 @@ export function HayFormModal({
       title={editing ? "Edit hay stack" : "Add hay stack"}
       sub={editing ? `Stack #${editing.id} — ${fmtQty(editing.quantity, editing.unit)} on hand` : "New stack in the live database"}
       onClose={onClose}
+      footer={
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 sm:w-auto sm:px-5">
+            Cancel
+          </button>
+          <button type="submit" form="hay-form" disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-green-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-900 disabled:opacity-60 sm:w-auto sm:px-5">
+            {saving ? "Saving…" : editing ? "Save changes" : "Add stack"}
+          </button>
+        </div>
+      }
     >
-      <form onSubmit={submit} className="space-y-4">
+      <form id="hay-form" onSubmit={submit} className="space-y-4">
         {error && <ErrorNote error={error} />}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Hay type">
@@ -146,10 +170,10 @@ export function HayFormModal({
           <Field label="Cutting">
             <input className={inputCls} value={form.cutting ?? ""} onChange={(e) => set("cutting", e.target.value)} placeholder="2nd" />
           </Field>
-          <Field label="Field / source">
+          <Field label="Field / source" className="sm:col-span-2">
             <input className={inputCls} value={form.field_or_source ?? ""} onChange={(e) => set("field_or_source", e.target.value)} placeholder="River Field / bought — Mule Shoe Dairy" />
           </Field>
-          <Field label="Storage location">
+          <Field label="Storage location" className="sm:col-span-2">
             <input className={inputCls} value={form.storage_location ?? ""} onChange={(e) => set("storage_location", e.target.value)} placeholder="Main barn — south row" />
           </Field>
           <Field label="Unit">
@@ -162,6 +186,7 @@ export function HayFormModal({
           <Field label={`Quantity on hand (${form.unit}) *`}>
             <input
               type="number" min={0} step={form.unit === "tons" ? 0.1 : 1}
+              inputMode={form.unit === "tons" ? "decimal" : "numeric"}
               className={inputCls}
               value={form.quantity}
               onChange={(e) => set("quantity", e.target.value === "" ? 0 : Number(e.target.value))}
@@ -172,6 +197,7 @@ export function HayFormModal({
             <Field label="Avg bale weight (lbs)">
               <input
                 type="number" min={1} step={1}
+                inputMode="numeric"
                 className={inputCls}
                 value={form.bale_weight_lbs ?? ""}
                 onChange={(e) => set("bale_weight_lbs", e.target.value ? Number(e.target.value) : null)}
@@ -185,6 +211,7 @@ export function HayFormModal({
           <Field label="Low-stock alert at">
             <input
               type="number" min={0} step={form.unit === "tons" ? 0.1 : 1}
+              inputMode={form.unit === "tons" ? "decimal" : "numeric"}
               className={inputCls}
               value={form.low_stock_threshold}
               onChange={(e) => set("low_stock_threshold", e.target.value === "" ? 0 : Number(e.target.value))}
@@ -195,17 +222,10 @@ export function HayFormModal({
         <Field label="Notes">
           <textarea className={inputCls} rows={2} value={form.notes ?? ""} onChange={(e) => set("notes", e.target.value)} placeholder="Quality, rain damage, who it's for…" />
         </Field>
-        <div className="flex justify-end gap-2 border-t border-stone-100 pt-4">
-          <button type="button" onClick={onClose} className="btn-outline !px-4 !py-2">Cancel</button>
-          <button type="submit" disabled={saving} className="btn-primary !px-4 !py-2 disabled:opacity-60">
-            {saving ? "Saving…" : editing ? "Save changes" : "Add stack"}
-          </button>
-        </div>
       </form>
     </Modal>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Add / edit feed item
 // ---------------------------------------------------------------------------
@@ -255,8 +275,18 @@ export function FeedFormModal({
       title={editing ? `Edit ${editing.name}` : "Add feed item"}
       sub={editing ? `Item #${editing.id} — ${fmtQty(editing.quantity, editing.unit)} on hand` : "New item in the live database"}
       onClose={onClose}
+      footer={
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 sm:w-auto sm:px-5">
+            Cancel
+          </button>
+          <button type="submit" form="feed-form" disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-green-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-900 disabled:opacity-60 sm:w-auto sm:px-5">
+            {saving ? "Saving…" : editing ? "Save changes" : "Add item"}
+          </button>
+        </div>
+      }
     >
-      <form onSubmit={submit} className="space-y-4">
+      <form id="feed-form" onSubmit={submit} className="space-y-4">
         {error && <ErrorNote error={error} />}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Name *" className="sm:col-span-2">
@@ -279,6 +309,7 @@ export function FeedFormModal({
           <Field label={`Quantity on hand (${form.unit}) *`}>
             <input
               type="number" min={0} step={form.unit === "tons" ? 0.1 : 1}
+              inputMode={form.unit === "tons" ? "decimal" : "numeric"}
               className={inputCls}
               value={form.quantity}
               onChange={(e) => set("quantity", e.target.value === "" ? 0 : Number(e.target.value))}
@@ -288,6 +319,7 @@ export function FeedFormModal({
           <Field label="Low-stock alert at">
             <input
               type="number" min={0} step={form.unit === "tons" ? 0.1 : 1}
+              inputMode={form.unit === "tons" ? "decimal" : "numeric"}
               className={inputCls}
               value={form.low_stock_threshold}
               onChange={(e) => set("low_stock_threshold", e.target.value === "" ? 0 : Number(e.target.value))}
@@ -300,6 +332,7 @@ export function FeedFormModal({
           <Field label="Cost per unit ($)">
             <input
               type="number" min={0} step={0.01}
+              inputMode="decimal"
               className={inputCls}
               value={costDollars}
               onChange={(e) => setCostDollars(e.target.value)}
@@ -310,17 +343,10 @@ export function FeedFormModal({
         <Field label="Notes">
           <textarea className={inputCls} rows={2} value={form.notes ?? ""} onChange={(e) => set("notes", e.target.value)} placeholder="Ration notes, delivery cadence…" />
         </Field>
-        <div className="flex justify-end gap-2 border-t border-stone-100 pt-4">
-          <button type="button" onClick={onClose} className="btn-outline !px-4 !py-2">Cancel</button>
-          <button type="submit" disabled={saving} className="btn-primary !px-4 !py-2 disabled:opacity-60">
-            {saving ? "Saving…" : editing ? "Save changes" : "Add item"}
-          </button>
-        </div>
       </form>
     </Modal>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Log usage — inserts a usage entry and decrements on-hand quantity
 // ---------------------------------------------------------------------------
@@ -388,8 +414,19 @@ export function LogUsageModal({
   };
 
   return (
-    <Modal title="Log feed / hay use" sub="Adds a usage entry and takes it off the on-hand count" onClose={onClose}>
-      <form onSubmit={submit} className="space-y-4">
+    <Modal title="Log feed / hay use" sub="Adds a usage entry and takes it off the on-hand count" onClose={onClose}
+      footer={
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 sm:w-auto sm:px-5">
+            Cancel
+          </button>
+          <button type="submit" form="log-usage-form" disabled={saving || !selected} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-green-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-900 disabled:opacity-60 sm:w-auto sm:px-5">
+            {saving ? "Logging…" : "Log use"}
+          </button>
+        </div>
+      }
+    >
+      <form id="log-usage-form" onSubmit={submit} className="space-y-4">
         {error && <ErrorNote error={error} />}
         <Field label="Item *">
           <select className={inputCls} value={itemKey} onChange={(e) => { setItemKey(e.target.value); setQuantity(""); }}>
@@ -413,6 +450,7 @@ export function LogUsageModal({
           <Field label={`Quantity used (${unit}) *`}>
             <input
               type="number" min={0} step={unit === "tons" ? 0.25 : 1}
+              inputMode={unit === "tons" ? "decimal" : "numeric"}
               className={inputCls}
               value={quantity}
               onChange={(e) => setQuantity(e.target.value === "" ? "" : Number(e.target.value))}
@@ -455,17 +493,10 @@ export function LogUsageModal({
         <Field label="Notes">
           <input className={inputCls} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Fed at the north feeder…" />
         </Field>
-        <div className="flex justify-end gap-2 border-t border-stone-100 pt-4">
-          <button type="button" onClick={onClose} className="btn-outline !px-4 !py-2">Cancel</button>
-          <button type="submit" disabled={saving || !selected} className="btn-primary !px-4 !py-2 disabled:opacity-60">
-            {saving ? "Logging…" : "Log use"}
-          </button>
-        </div>
       </form>
     </Modal>
   );
 }
-
 export function hayLabel(h: HayItem): string {
   const source = h.field_or_source ? ` — ${h.field_or_source}` : "";
   return `${cap(h.feed_type)}${h.cutting ? `, ${h.cutting} cutting` : ""}${source}`;
