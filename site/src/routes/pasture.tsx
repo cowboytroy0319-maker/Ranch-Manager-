@@ -1,8 +1,10 @@
-import { Link, createFileRoute, redirect } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { getSession } from "~/server/auth";
+import { AppShell } from "~/components/AppShell";
 import { useMemo, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { getPastureData } from "~/server/pasture";
+import { PastureFormModal } from "~/components/pasture/PastureModals";
 import type { Pasture, Species } from "~/types/pasture";
 
 export const Route = createFileRoute("/pasture")({
@@ -404,6 +406,11 @@ type PastureRow = {
 
 function PasturePage() {
   const data = Route.useLoaderData();
+  const router = useRouter();
+  const refresh = () => router.invalidate();
+
+  const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState<Pasture | null>(null);
 
   const meta = useMemo(() => {
     const windowStart = new Date(Date.now() - 20 * 86400000).toISOString().slice(0, 10);
@@ -564,10 +571,15 @@ function PasturePage() {
 
       {/* Pasture / grazing board */}
       <Card>
-        <CardTitle
-          title="Pasture &amp; grazing board"
-          sub="Each paddock's size, current herd, and grazing/rest state (last 21 days)"
-        />
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <CardTitle
+            title="Pasture &amp; grazing board"
+            sub="Each paddock's size, current herd, and grazing/rest state (last 21 days)"
+          />
+          <button onClick={() => { setEditing(null); setAddOpen(true); }} className="btn-primary !px-4 !py-2 text-sm">
+            + Add pasture
+          </button>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-4xl text-left text-sm">
             <thead>
@@ -621,7 +633,7 @@ function PasturePage() {
               {rows.length === 0 && (
                 <tr>
                   <td colSpan={7} className="py-8 text-center text-sm text-stone-500">
-                    No paddocks on record yet — run{" "}
+                    No paddocks on record yet — hit “+ Add pasture” above to map your first one, or run{" "}
                     <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">bun run db:seed</code> for the demo
                     rotation.
                   </td>
@@ -644,65 +656,28 @@ function PasturePage() {
         </p>
         <EnvironmentIntelligence />
       </div>
+
+      {addOpen || editing ? (
+        <PastureFormModal
+          key={editing ? `edit-${editing.id}` : "add-pasture"}
+          editing={editing}
+          onClose={() => { setEditing(null); setAddOpen(false); }}
+          onSaved={() => { setEditing(null); setAddOpen(false); refresh(); }}
+        />
+      ) : null}
     </Shell>
   );
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-dvh bg-stone-100">
-      <header className="sticky top-0 z-40 flex items-center justify-between gap-3 border-b border-stone-200 bg-white px-4 py-3 sm:px-6">
-        <div className="flex items-center gap-3">
-          <Link to="/" className="flex items-center gap-2">
-            <div className="grid h-8 w-8 place-items-center rounded-lg bg-green-800 text-white">🌾</div>
-            <span className="hidden font-bold text-stone-900 sm:inline">Ranch Manager Pro</span>
-          </Link>
-          <span className="rounded-full border border-green-200 bg-green-50 px-2.5 py-0.5 text-xs font-semibold text-green-800">
-            Pasture &amp; Grazing
-          </span>
-        </div>
-        <div className="flex items-center gap-2 text-sm">
-          <Link to="/livestock" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Livestock
-          </Link>
-          <Link to="/feed" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Feed &amp; Hay
-          </Link>
-          <Link to="/equipment" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Equipment
-          </Link>
-          <Link to="/employees" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Employees
-          </Link>
-          <Link to="/dashboard" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Daily Ops
-          </Link>
-          <Link to="/analytics" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Analytics
-          </Link>
-          <Link to="/" className="hidden rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50 md:inline">
-            ← Back to site
-          </Link>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 sm:py-8">
-        <div>
-          <p className="eyebrow">Third real module · live database</p>
-          <h1 className="mt-1 text-3xl font-bold text-stone-900 sm:text-4xl">Pasture &amp; Grazing</h1>
-          <p className="mt-1 max-w-2xl text-sm text-stone-600">
-            Paddocks, grazing/rest rotations, and region-aware forage guidance — so the right herd grazes the right ground at
-            the right time.
-          </p>
-        </div>
-        {children}
-        <footer className="flex flex-col items-center justify-between gap-3 border-t border-stone-200 pt-6 text-sm text-stone-500 sm:flex-row">
-          <span>© {new Date().getFullYear()} Ranch Manager Pro · Pasture &amp; Grazing module (MVP)</span>
-          <Link to="/dashboard" className="font-medium text-green-700 hover:text-green-900">
-            ← Back to the morning briefing
-          </Link>
-        </footer>
-      </main>
-    </div>
+    <AppShell
+      badge="Pasture &amp; Grazing"
+      eyebrow="Third real module · live database"
+      title="Pasture &amp; Grazing"
+      subtitle="Paddocks, grazing/rest rotations, and region-aware forage guidance — so the right herd grazes the right ground at the right time."
+    >
+      {children}
+    </AppShell>
   );
 }

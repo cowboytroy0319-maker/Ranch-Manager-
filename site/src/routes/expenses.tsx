@@ -1,9 +1,10 @@
-import { Link, createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { getExpensesData } from "~/server/expenses";
 import { CATEGORY_LABEL, type ExpenseCategory } from "~/types/expenses";
 import { getSession } from "~/server/auth";
+import { AppShell } from "~/components/AppShell";
 
 export const Route = createFileRoute("/expenses")({
   beforeLoad: async () => {
@@ -166,60 +167,13 @@ function ExpensesPage() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-dvh bg-stone-100">
-      <header className="sticky top-0 z-40 flex items-center justify-between gap-3 border-b border-stone-200 bg-white px-4 py-3 sm:px-6">
-        <div className="flex items-center gap-3">
-          <Link to="/" className="flex items-center gap-2">
-            <div className="grid h-8 w-8 place-items-center rounded-lg bg-green-800 text-white">🌾</div>
-            <span className="hidden font-bold text-stone-900 sm:inline">Ranch Manager Pro</span>
-          </Link>
-          <span className="rounded-full border border-green-200 bg-green-50 px-2.5 py-0.5 text-xs font-semibold text-green-800">
-            Expenses &amp; Costs
-          </span>
-        </div>
-        <div className="flex items-center gap-2 text-sm">
-          <Link to="/livestock" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Livestock
-          </Link>
-          <Link to="/feed" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Feed &amp; Hay
-          </Link>
-          <Link to="/pasture" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Pasture
-          </Link>
-          <Link to="/equipment" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Equipment
-          </Link>
-          <Link to="/employees" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Employees
-          </Link>
-          <Link to="/dashboard" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Daily Ops
-          </Link>
-          <Link to="/analytics" className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50">
-            Analytics
-          </Link>
-          <Link to="/" className="hidden rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 transition hover:bg-stone-50 md:inline">
-            ← Back to site
-          </Link>
-        </div>
-      </header>
-      <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6 sm:py-8">
-        <div>
-          <p className="eyebrow">Fifth module · live database</p>
-          <h1 className="mt-1 text-3xl font-bold text-stone-900 sm:text-4xl">Expenses &amp; Cost Allocation</h1>
-          <p className="mt-1 max-w-2xl text-sm text-stone-600">
-            The current-month operating ledger — what you spent and where every dollar lands across herd, pasture, equipment, job, and category.
-          </p>
-        </div>
-        {children}
-        <footer className="flex flex-col items-center justify-between gap-3 border-t border-stone-200 pt-6 text-sm text-stone-500 sm:flex-row">
-          <span>© {new Date().getFullYear()} Ranch Manager Pro · Expenses module (MVP)</span>
-          <Link to="/dashboard" className="font-medium text-green-700 hover:text-green-900">
-            ← Back to the morning briefing
-          </Link>
-        </footer>
-      </main>
-    </div>
+    <AppShell
+      badge="Expenses"
+      eyebrow="Cost module · live database"
+      title="Expenses &amp; Cost Allocation"
+      subtitle="Every dollar tagged to the herd, pasture, equipment, or job that spent it — so cost per head, acre, bale, and mile are answerable."
+    >
+      {children}
+    </AppShell>
   );
 }

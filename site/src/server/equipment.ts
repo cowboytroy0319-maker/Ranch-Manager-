@@ -6,7 +6,15 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
-import type { EquipmentData, EquipmentItem, FuelEntry, MaintenanceRecord } from "~/types/equipment";
+import {
+  EQUIPMENT_CATEGORIES,
+  EQUIPMENT_STATUSES,
+  FUEL_TYPES,
+  type EquipmentData,
+  type EquipmentItem,
+  type FuelEntry,
+  type MaintenanceRecord,
+} from "~/types/equipment";
 
 // ---------------------------------------------------------------------------
 // Read: everything the module needs in one round trip
@@ -67,3 +75,104 @@ export const getEquipmentData = createServerFn().handler(async (): Promise<Equip
     };
   }
 });
+
+// ---------------------------------------------------------------------------
+// Validation helpers (plain, no schema library — mirrors livestock.ts)
+// ---------------------------------------------------------------------------
+
+const str = (v: unknown): string | null => {
+  const s = typeof v === "string" ? v.trim() : "";
+  return s.length ? s : null;
+};
+
+const oneOf = <T extends string>(v: unknown, allowed: readonly T[]): T | null =>
+  typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : null;
+
+/** Non-negative number (hours/miles) or null. Accepts decimals. */
+const nonNegativeNum = (v: unknown, field: string): number | null => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) throw new Error(`${field} must be a number.`);
+  if (n < 0) throw new Error(`${field} can't be negative.`);
+  return n;
+};
+
+const optionalInt = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+};
+
+export type EquipmentInput = {
+  id?: number;
+  name: string;
+  category: EquipmentItem["category"];
+  make: string | null;
+  model: string | null;
+  year: number | null;
+  hours: number | null;
+  miles: number | null;
+  location: string | null;
+  fuel_type: string | null;
+  notes: string | null;
+  status: EquipmentItem["status"];
+};
+
+export function parseEquipmentInput(raw: unknown): EquipmentInput {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const name = str(d.name);
+  if (!name) throw new Error("Equipment name is required.");
+  if (name.length > 200) throw new Error("Equipment name is too long (max 200 characters).");
+  const id = optionalInt(d.id);
+  const year = optionalInt(d.year);
+  if (year !== null && (year < 1900 || year > 2100)) {
+    throw new Error("Year must be between 1900 and 2100.");
+  }
+  return {
+    id: id === null ? undefined : id,
+    name,
+    category: oneOf(d.category, EQUIPMENT_CATEGORIES) ?? "other",
+    make: str(d.make),
+    model: str(d.model),
+    year,
+    hours: nonNegativeNum(d.hours, "Hours"),
+    miles: nonNegativeNum(d.miles, "Miles"),
+    location: str(d.location),
+    fuel_type: oneOf(d.fuel_type, FUEL_TYPES as readonly string[]) ?? null,
+    notes: str(d.notes),
+    status: oneOf(d.status, EQUIPMENT_STATUSES) ?? "in-service",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Write: save equipment (insert or update)
+// ---------------------------------------------------------------------------
+
+export const saveEquipment = createServerFn({ method: "POST" })
+  .validator(parseEquipmentInput)
+  .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
+    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    try {
+      const auth = await requireAuth();
+      const db = sql();
+      const e = data;
+      if (e.id) {
+        const updated = await db`
+          UPDATE equipment SET name=${e.name}, category=${e.category}, make=${e.make}, model=${e.model},
+            year=${e.year}, hours=${e.hours}, miles=${e.miles}, location=${e.location},
+            fuel_type=${e.fuel_type}, notes=${e.notes}, status=${e.status}, updated_at=now()
+          WHERE id=${e.id} AND operation_id=${auth.operationId} RETURNING id`;
+        if (updated.length === 0) return { ok: false, error: `Unit #${e.id} no longer exists in this ranch.` };
+        return { ok: true, id: e.id };
+      }
+      const [row] = await db<[{ id: number }]>`
+        INSERT INTO equipment (operation_id, name, category, make, model, year, hours, miles,
+                               location, fuel_type, notes, status)
+        VALUES (${auth.operationId}, ${e.name}, ${e.category}, ${e.make}, ${e.model}, ${e.year}, ${e.hours}, ${e.miles},
+                ${e.location}, ${e.fuel_type}, ${e.notes}, ${e.status})
+        RETURNING id`;
+      return { ok: true, id: row.id };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
