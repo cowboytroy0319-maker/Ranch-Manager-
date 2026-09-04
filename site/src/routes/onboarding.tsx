@@ -207,9 +207,9 @@ function OnboardingPage() {
               </Link>
               <Link
                 to="/onboarding/import"
-                className="flex min-h-14 items-center justify-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm font-semibold text-stone-600 transition hover:border-stone-300 hover:bg-stone-100"
+                className="flex min-h-14 items-center justify-center gap-2 rounded-xl border border-green-700/40 bg-green-50 px-4 py-3 text-sm font-semibold text-green-900 transition hover:border-green-700 hover:bg-green-100 active:bg-green-200"
               >
-                📥 Import existing records <span className="text-xs font-normal text-amber-700">(coming soon)</span>
+                📥 Import existing records <span className="text-xs font-normal text-green-700">(livestock CSV)</span>
               </Link>
               <Link
                 to="/dashboard"

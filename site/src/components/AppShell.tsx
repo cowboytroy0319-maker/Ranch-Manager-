@@ -23,9 +23,22 @@ export const APP_NAV: NavItem[] = [
   { to: "/tax-exemptions", label: "Tax Exemptions", emoji: "📄" },
   { to: "/tasks", label: "Tasks", emoji: "✅" },
   { to: "/onboarding/templates", label: "Templates", emoji: "📋" },
+  { to: "/onboarding/import", label: "Import", emoji: "📥" },
 ];
 
-export const NOTE_ITEMS = ["/dashboard", "/livestock", "/feed", "/pasture", "/equipment", "/expenses", "/employees", "/tax-exemptions", "/tasks", "/onboarding/templates"];
+export const NOTE_ITEMS = [
+  "/dashboard",
+  "/livestock",
+  "/feed",
+  "/pasture",
+  "/equipment",
+  "/expenses",
+  "/employees",
+  "/tax-exemptions",
+  "/tasks",
+  "/onboarding/templates",
+  "/onboarding/import",
+];
 
 export function isAppPath(path: string): boolean {
   return NOTE_ITEMS.includes(path);

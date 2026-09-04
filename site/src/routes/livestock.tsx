@@ -310,6 +310,9 @@ function LivestockPage() {
                 <option key={p} value={p}>{p}</option>
               ))}
             </select>
+            <Link to="/onboarding/import" className="rounded-lg border border-green-700/40 bg-green-50 px-4 py-2 text-sm font-semibold text-green-800 transition hover:bg-green-100">
+              📥 Import from CSV
+            </Link>
             <button onClick={() => setAddOpen(true)} className="btn-primary !px-4 !py-2 text-sm">
               + Add animal
             </button>

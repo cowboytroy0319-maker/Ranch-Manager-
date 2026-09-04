@@ -21,6 +21,7 @@ export const MORE_NAV = [
   { to: "/expenses", label: "Expenses", emoji: "🧾" },
   { to: "/employees", label: "Employees", emoji: "👷" },
   { to: "/tax-exemptions", label: "Tax Exemptions", emoji: "📄" },
+  { to: "/onboarding/import", label: "Import CSV", emoji: "📥" },
   { to: "/onboarding/templates", label: "Templates", emoji: "📋" },
 ] as const;
 
