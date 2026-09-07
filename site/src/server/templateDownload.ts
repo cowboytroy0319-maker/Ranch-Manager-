@@ -71,13 +71,18 @@ export async function handleTemplateDownload(req: Request): Promise<Response> {
   // AUTH GATE: the raw HTTP layer has no session context, so validate the
   // rmp_session cookie directly against the DB. Unauthenticated / expired →
   // redirect to login exactly like the protected routes (/tasks etc.).
+  // Redirect with a RELATIVE Location ("/login?reason=auth"), never an absolute
+  // URL built from url.origin: behind the reverse proxy the request's host is
+  // the internal upstream (e.g. ip-…beamlit.net), and an absolute redirect would
+  // bounce the owner to that internal host instead of the public domain. A
+  // relative path is resolved by the browser against the public host they're on.
   const token = sessionTokenFromRequest(req);
   if (!token || !isDatabaseConfigured()) {
-    return Response.redirect(new URL(`/login?reason=auth`, url.origin), 302);
+    return Response.redirect("/login?reason=auth", 302);
   }
   const auth = await resolveAuthToken(sql(), token);
   if (!auth) {
-    return Response.redirect(new URL(`/login?reason=auth`, url.origin), 302);
+    return Response.redirect("/login?reason=auth", 302);
   }
 
   const csv = buildTemplateCsv(slug);

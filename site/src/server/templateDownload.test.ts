@@ -94,13 +94,13 @@ describe("template download route — auth rejection", () => {
   test("no cookie → 302 redirect to /login?reason=auth (like protected routes)", async () => {
     const res = await handleTemplateDownload(downloadRequest("livestock"));
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(`${URL_BASE}/login?reason=auth`);
+    expect(res.headers.get("location")).toBe("/login?reason=auth");
   });
 
   test("unknown token → 302 redirect to /login?reason=auth", async () => {
     const res = await handleTemplateDownload(downloadRequest("livestock", "bogus-token"));
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(`${URL_BASE}/login?reason=auth`);
+    expect(res.headers.get("location")).toBe("/login?reason=auth");
   });
 
   test("unknown slug → 404 even with a valid session", async () => {
@@ -151,7 +151,7 @@ describe("template download route — authenticated downloads", () => {
     await db`DELETE FROM sessions WHERE token_hash = ${sha256Hex(token)}`;
     const res = await handleTemplateDownload(downloadRequest("livestock", token));
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(`${URL_BASE}/login?reason=auth`);
+    expect(res.headers.get("location")).toBe("/login?reason=auth");
   });
 
   test("expired session → redirect to login (expires_at in the past)", async () => {
@@ -162,7 +162,7 @@ describe("template download route — authenticated downloads", () => {
       VALUES (${sha256Hex(token)}, ${user.id}, now() - interval '1 minute')`;
     const res = await handleTemplateDownload(downloadRequest("tasks", token));
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(`${URL_BASE}/login?reason=auth`);
+    expect(res.headers.get("location")).toBe("/login?reason=auth");
   });
 });
 
