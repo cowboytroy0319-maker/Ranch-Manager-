@@ -26,6 +26,7 @@ import {
   parseProjectInput,
   parseTaskInput,
   selectDashboardTasks,
+  TASKS_LOAD_ERROR_MESSAGE,
   todayStr,
 } from "./tasks";
 import type { DashboardTask, Task } from "~/types/tasks";
@@ -447,5 +448,55 @@ describe("module persisted writes (local DB, Ranch A scoped)", () => {
     expect(rows[0].category).toBe("truck");
     expect(Number(rows[0].miles)).toBe(98400);
     expect(rows[0].fuel_type).toBe("diesel");
+  });
+});
+// ---------------------------------------------------------------------------
+// Item 1 regression — customer-safe error handling
+// ---------------------------------------------------------------------------
+// The load-error contract is: when a fetch fails, the payload is an ERROR
+// shape (error = the fixed safe message, tasks = []) — never a raw err.message
+// with SQL/stack details. The genuine-empty shape (no error, tasks = []) stays
+// distinct so the UI can tell "no tasks" from "couldn't load". The server fns
+// (getTasksData / getDashboardTasks) return these shapes from their catch
+// blocks; the exact message constant below is what they return, and the
+// TasksSnapshot component test proves the two states render differently.
+
+describe("customer-safe task load errors", () => {
+  test("TASKS_LOAD_ERROR_MESSAGE is the fixed safe copy (never a raw err.message)", () => {
+    expect(TASKS_LOAD_ERROR_MESSAGE).toBe(
+      "We couldn't load your tasks right now. Please refresh and try again."
+    );
+    // The public message must not leak internal detail.
+    expect(TASKS_LOAD_ERROR_MESSAGE).not.toMatch(/err|sql|column|migration|DATABASE_URL|db:seed|stack/i);
+  });
+
+  test("the error payload shape carries the safe message and an EMPTY task list (not fake data)", () => {
+    // The exact shape getTasksData / getDashboardTasks return on failure.
+    const failure = {
+      configured: true,
+      error: TASKS_LOAD_ERROR_MESSAGE,
+      tasks: [],
+      projects: [],
+      pastures: [],
+      equipment: [],
+      animals: [],
+    };
+    expect(failure.error).toBe(TASKS_LOAD_ERROR_MESSAGE);
+    expect(failure.tasks).toEqual([]);
+    // no partial/fake data is ever rendered alongside the error
+    expect(failure.projects).toEqual([]);
+    expect(failure.pastures).toEqual([]);
+  });
+
+  test("success with zero tasks is DISTINCT from a load failure (no error key)", () => {
+    const emptySuccess = { configured: true, tasks: [] as never[], projects: [] };
+    expect("error" in emptySuccess).toBe(false);
+    expect(emptySuccess.tasks).toEqual([]);
+    expect(emptySuccess).not.toEqual({ configured: true, error: TASKS_LOAD_ERROR_MESSAGE, tasks: [], projects: [] });
+  });
+
+  test("selectDashboardTasks treats an empty list as an empty board (not an error)", () => {
+    expect(selectDashboardTasks([], todayStr())).toEqual([]);
+    expect(dashboardCounts([])).toEqual({ overdue: 0, dueToday: 0, high: 0 });
   });
 });

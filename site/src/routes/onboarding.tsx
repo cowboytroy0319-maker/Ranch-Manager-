@@ -24,10 +24,11 @@ import { MobilePrimaryButton } from "~/components/ui";
 import {
   finishOnboarding,
   getOnboarding,
+  markTemplatesDownloaded,
   renameOperation,
   saveOnboarding,
 } from "~/server/onboarding";
-import { downloadTemplateCSV } from "~/components/onboarding/download";
+import { templateDownloadUrl } from "~/components/onboarding/download";
 import {
   OPERATION_TYPES,
   OPERATION_TYPE_LABEL,
@@ -158,16 +159,20 @@ function OnboardingPage() {
     }
   };
 
-  const handleDownload = async (slug: keyof typeof TEMPLATES) => {
-    const res = await downloadTemplateCSV(slug as TemplateSlug);
-    if (!res.ok) {
-      setError(res.error ?? "Could not download the template.");
-      return;
-    }
+  /** Fires on the click of a real download link: track the download locally
+   * and refresh setup progress so the "templates downloaded" step counts.
+   * The download itself is a plain <a href> navigation to the server-side CSV
+   * route — it never waits on this call. */
+  const handleDownload = (slug: TemplateSlug) => {
     setDownloaded((d) => (d.includes(slug) ? d : [...d, slug]));
     setSavedFlash(true);
     window.setTimeout(() => setSavedFlash(false), 2000);
-    await refresh();
+    void (async () => {
+      await markTemplatesDownloaded().catch(() => {
+        /* non-blocking — the download already started */
+      });
+      await refresh();
+    })();
   };
 
   // ----------------------------- view -----------------------------
@@ -311,14 +316,14 @@ function OnboardingPage() {
           <Card>
             <CardTitle title="Starter templates" sub="Plain CSV files with the exact fields the app accepts — open them in any spreadsheet. Downloading counts toward your setup progress." />
             <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {(Object.keys(TEMPLATES) as (keyof typeof TEMPLATES)[]).map((slug) => {
+              {(Object.keys(TEMPLATES) as TemplateSlug[]).map((slug) => {
                 const t = TEMPLATES[slug];
-                const got = downloaded.includes(slug as keyof typeof TEMPLATES);
+                const got = downloaded.includes(slug);
                 return (
-                  <button
+                  <a
                     key={slug}
-                    type="button"
-                    onClick={() => void handleDownload(slug)}
+                    href={templateDownloadUrl(slug)}
+                    onClick={() => handleDownload(slug)}
                     className="flex min-h-11 items-center justify-between gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-left text-sm font-medium text-stone-800 transition hover:border-green-700 hover:bg-green-50 active:bg-green-100"
                   >
                     <span className="flex min-w-0 items-center gap-2">
@@ -328,7 +333,7 @@ function OnboardingPage() {
                     <span className={`shrink-0 text-xs font-semibold ${got ? "text-green-700" : "text-stone-400"}`}>
                       {got ? "✓ downloaded" : "⬇ csv"}
                     </span>
-                  </button>
+                  </a>
                 );
               })}
             </div>

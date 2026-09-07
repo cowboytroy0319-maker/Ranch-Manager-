@@ -1,16 +1,19 @@
 // ============================================================================
 // Ranch Manager Pro — Starter templates page (protected). Lists all six
-// downloadable CSV templates with their plain-language field legends and
-// downloads them via a real Blob + anchor flow (authenticated server fn).
-// Item 2 scope is templates ONLY — there is no import parsing here.
+// downloadable CSV templates with their plain-language field legends. Each
+// Download button is a REAL <a href> to the server-side CSV route
+// (/templates/<slug>.csv) — a normal navigation that iPhone Safari downloads
+// natively (no Blob + anchor click). The server validates the session cookie
+// and serves the attachment. Item 2 scope is templates ONLY — there is no
+// import parsing here.
 // ============================================================================
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { useState } from "react";
 import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
 import { Badge, Card, CardTitle } from "~/components/ui";
-import { downloadTemplateCSV } from "~/components/onboarding/download";
 import { markTemplatesDownloaded } from "~/server/onboarding";
+import { templateDownloadUrl } from "~/components/onboarding/download";
 import { TEMPLATES, type TemplateSlug } from "~/types/onboarding";
 
 export const Route = createFileRoute("/onboarding/templates")({
@@ -23,21 +26,15 @@ export const Route = createFileRoute("/onboarding/templates")({
 
 function TemplatesPage() {
   const [downloaded, setDownloaded] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
 
-  const handleDownload = async (slug: TemplateSlug) => {
-    setError(null);
-    const res = await downloadTemplateCSV(slug);
-    if (!res.ok) {
-      setError(res.error ?? "Could not download the template.");
-      return;
-    }
+  /** Fires on the click of a real download link: mark the setup-progress
+   * checkbox (best-effort, non-blocking — the download itself is a plain
+   * navigation and never depends on this call). */
+  const onDownloaded = (slug: TemplateSlug) => {
     setDownloaded((d) => (d.includes(slug) ? d : [...d, slug]));
-    try {
-      await markTemplatesDownloaded();
-    } catch {
-      /* non-blocking — the download still worked */
-    }
+    void markTemplatesDownloaded().catch(() => {
+      /* non-blocking — the download already started */
+    });
   };
 
   return (
@@ -60,12 +57,6 @@ function TemplatesPage() {
           </div>
         </Card>
 
-        {error && (
-          <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
-          </p>
-        )}
-
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           {(Object.keys(TEMPLATES) as TemplateSlug[]).map((slug) => {
             const t = TEMPLATES[slug];
@@ -83,12 +74,13 @@ function TemplatesPage() {
                     </li>
                   ))}
                 </ul>
-                <button
-                  onClick={() => void handleDownload(slug)}
-                  className="mt-4 w-full rounded-lg border border-green-700/40 bg-green-50 px-4 py-3 text-sm font-semibold text-green-900 transition hover:bg-green-100 active:bg-green-200"
+                <a
+                  href={templateDownloadUrl(slug)}
+                  onClick={() => onDownloaded(slug)}
+                  className="mt-4 w-full rounded-lg border border-green-700/40 bg-green-50 px-4 py-3 text-center text-sm font-semibold text-green-900 transition hover:bg-green-100 active:bg-green-200"
                 >
                   {got ? "✓ Downloaded — ranch-" + slug + ".csv" : `⬇ Download ${t.title} CSV`}
-                </button>
+                </a>
               </Card>
             );
           })}

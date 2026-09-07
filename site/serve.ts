@@ -10,6 +10,7 @@
 // the takeover works across user boundaries.
 import handler from "./dist/server/server.js";
 import { handleWebhookRequest } from "./src/server/webhook";
+import { handleTemplateDownload, TEMPLATE_DOWNLOAD_PATH } from "./src/server/templateDownload";
 
 // Pinned, NOT read from the environment. The published preview URL
 // (<label>.<PUBLIC_SITE_DOMAIN>) is reverse-proxied to 0.0.0.0:3000 inside the
@@ -45,6 +46,12 @@ for (let attempt = 1; ; attempt++) {
         // Stripe webhook deliveries: handle (verify + record + respond) here, at
         // the HTTP layer, before any SSR/static handling — it needs the raw body.
         if (pathname === "/webhook") return handleWebhookRequest(req);
+        // Authenticated CSV template downloads (GET /templates/<slug>.csv) —
+        // handled at the HTTP layer like the webhook so iPhone Safari gets a
+        // real server-side download URL instead of a client-side Blob click.
+        if (pathname.startsWith(`${TEMPLATE_DOWNLOAD_PATH}/`) && pathname.endsWith(".csv")) {
+          return handleTemplateDownload(req);
+        }
         if (pathname !== "/") {
           const file = Bun.file(CLIENT_DIR + pathname);
           if (await file.exists()) return new Response(file);

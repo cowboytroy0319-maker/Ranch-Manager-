@@ -12,6 +12,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import handler from "./dist/server/server.js";
 import { handleWebhookRequest } from "./src/server/webhook";
+import { handleTemplateDownload, TEMPLATE_DOWNLOAD_PATH } from "./src/server/templateDownload";
 
 const fetchHandler = handler as {
   fetch: (request: Request) => Response | Promise<Response>;
@@ -40,9 +41,12 @@ export default async function vercelHandler(
   res: ServerResponse
 ): Promise<void> {
   try {
+    const pathname = new URL(req.url ?? "/", "http://placeholder").pathname;
     const webRes =
-      new URL(req.url ?? "/", "http://placeholder").pathname === "/webhook"
+      pathname === "/webhook"
         ? await handleWebhookRequest(toWebRequest(req))
+        : pathname.startsWith(`${TEMPLATE_DOWNLOAD_PATH}/`) && pathname.endsWith(".csv")
+        ? await handleTemplateDownload(toWebRequest(req))
         : await fetchHandler.fetch(toWebRequest(req));
     res.statusCode = webRes.status;
     webRes.headers.forEach((value, key) => res.setHeader(key, value));

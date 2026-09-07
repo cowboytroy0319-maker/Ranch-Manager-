@@ -24,6 +24,12 @@ import {
 // Read: everything the module needs in one round trip
 // ---------------------------------------------------------------------------
 
+// The exact customer-facing message shown whenever the tasks data cannot be
+// loaded. Deliberately generic: no SQL, no column names, no stack traces, no
+// migration details, no internal IDs. The real error is logged server-side.
+export const TASKS_LOAD_ERROR_MESSAGE =
+  "We couldn't load your tasks right now. Please refresh and try again.";
+
 export const getTasksData = createServerFn().handler(async (): Promise<TasksData> => {
   if (!isDatabaseConfigured()) {
     return { configured: false, tasks: [], projects: [], pastures: [], equipment: [], animals: [] };
@@ -74,9 +80,12 @@ export const getTasksData = createServerFn().handler(async (): Promise<TasksData
       animals: animalRows as unknown as TasksData["animals"],
     };
   } catch (err) {
+    // The real error stays server-side (seen by us in the logs); the client
+    // only ever receives the fixed, safe message.
+    console.error("[tasks] getTasksData failed:", err);
     return {
       configured: true,
-      error: err instanceof Error ? err.message : String(err),
+      error: TASKS_LOAD_ERROR_MESSAGE,
       tasks: [],
       projects: [],
       pastures: [],
@@ -429,6 +438,9 @@ export const getDashboardTasks = createServerFn().handler(async (): Promise<{
     >[];
     return { configured: true, tasks: selectDashboardTasks(all, todayStr(), projectNames) };
   } catch (err) {
-    return { configured: false, error: err instanceof Error ? err.message : String(err), tasks: [] };
+    // The real error stays server-side; the dashboard gets the same fixed,
+    // safe message so a load failure is never shown as an empty "All clear".
+    console.error("[tasks] getDashboardTasks failed:", err);
+    return { configured: false, error: TASKS_LOAD_ERROR_MESSAGE, tasks: [] };
   }
 });
