@@ -184,26 +184,20 @@ function TasksPage() {
       <Shell>
         <Card className="mx-auto max-w-2xl border-amber-300 bg-amber-50">
           <CardTitle
-            title="✅ Database not configured"
-            sub="Tasks & projects persist to Postgres — no connection string is set in this environment."
+            title="We couldn't load your tasks"
+            sub="Your task list is stored on the ranch server — it isn't reachable from here right now."
           />
-          <ol className="list-inside list-decimal space-y-1.5 text-sm text-stone-700">
-            <li>
-              Set <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">DATABASE_URL</code> to a Postgres
-              connection string.
-            </li>
-            <li>
-              Run <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">bun run db:migrate</code> to create the
-              projects &amp; tasks tables (migration 0015).
-            </li>
-          </ol>
-          <p className="mt-4 text-sm text-stone-500">
-            Meanwhile, the <Link to="/demo" className="font-semibold text-green-700 hover:text-green-900">interactive demo</Link>{" "}
-            shows the same workflows with sample data.
-          </p>
+          <p className="mt-3 text-sm text-stone-700">No changes have been lost. Please try again in a moment.</p>
           <div className="mt-4 flex gap-2">
+            <button
+              type="button"
+              onClick={refresh}
+              className="btn-primary !px-4 !py-2 text-sm"
+            >
+              ↻ Retry
+            </button>
             <Link to="/dashboard" className="btn-outline !px-4 !py-2 text-sm">← Daily Ops dashboard</Link>
-            <Link to="/demo" className="btn-primary !px-4 !py-2 text-sm">Open demo</Link>
+            <Link to="/demo" className="btn-outline !px-4 !py-2 text-sm">Open demo</Link>
           </div>
         </Card>
       </Shell>
@@ -214,9 +208,18 @@ function TasksPage() {
     return (
       <Shell>
         <Card className="mx-auto max-w-2xl border-red-300 bg-red-50">
-          <CardTitle title="Database error" sub="The database is configured but the task records could not be read." />
-          <pre className="overflow-x-auto rounded-lg bg-white/70 p-3 text-xs text-red-800">{data.error}</pre>
-          <Link to="/dashboard" className="btn-outline !px-4 !py-2 text-sm">← Daily Ops dashboard</Link>
+          <CardTitle title="We couldn't load your tasks" sub="Your task list could not be read from the ranch server." />
+          <p className="mt-3 text-sm text-stone-700">{data.error}</p>
+          <div className="mt-4 flex gap-2">
+            <button
+              type="button"
+              onClick={refresh}
+              className="btn-primary !px-4 !py-2 text-sm"
+            >
+              ↻ Retry
+            </button>
+            <Link to="/dashboard" className="btn-outline !px-4 !py-2 text-sm">← Daily Ops dashboard</Link>
+          </div>
         </Card>
       </Shell>
     );

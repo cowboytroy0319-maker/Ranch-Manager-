@@ -164,18 +164,22 @@ export async function deleteSessionByToken(db: AuthDb, token: string): Promise<v
   await db`DELETE FROM sessions WHERE token_hash = ${sha256Hex(token)}`;
 }
 
-/** Resolve the authenticated user + operation from the request cookie, or null. */
-export async function resolveAuth(db?: AuthDb): Promise<AuthedUser | null> {
-  if (!isDatabaseConfigured()) return null;
-  const token = readSessionToken();
-  if (!token) return null;
-  const dbc = db ?? sql();
+/**
+ * Resolve the authenticated user + operation from a RAW session token string
+ * (no request context needed). SHA-256-hashes the token, looks it up in the
+ * `sessions` table (must be unexpired), then joins the user's first
+ * owner/worker/viewer membership. Used by requireAuth (request-scoped cookie)
+ * AND raw-HTTP handlers (e.g. the CSV download route at the HTTP layer) which
+ * parse the `rmp_session` cookie themselves. Any failure → null (treated as
+ * unauthenticated by callers).
+ */
+export async function resolveAuthToken(db: AuthDb, token: string): Promise<AuthedUser | null> {
   try {
-    const rows = await dbc<[{ user_id: number }]>`SELECT user_id FROM sessions
+    const rows = await db<[{ user_id: number }]>`SELECT user_id FROM sessions
       WHERE token_hash = ${sha256Hex(token)} AND expires_at > now()`;
     if (!rows.length) return null;
     const userId = rows[0].user_id;
-    const who = await dbc<
+    const who = await db<
       [{ email: string; operation_id: number; operation_name: string; role: string }]
     >`SELECT u.email, m.operation_id, o.name AS operation_name, m.role
       FROM users u
@@ -194,6 +198,14 @@ export async function resolveAuth(db?: AuthDb): Promise<AuthedUser | null> {
   } catch {
     return null;
   }
+}
+
+/** Resolve the authenticated user + operation from the request cookie, or null. */
+export async function resolveAuth(db?: AuthDb): Promise<AuthedUser | null> {
+  if (!isDatabaseConfigured()) return null;
+  const token = readSessionToken();
+  if (!token) return null;
+  return resolveAuthToken(db ?? sql(), token);
 }
 
 /** requireAuth for server fns: throws a 401-ish AuthError when unauthenticated. */

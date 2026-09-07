@@ -3,6 +3,11 @@
 // Surfaces the operation's OPEN tasks that are overdue, due today, or urgent/
 // high priority (selection lives in server/tasks.ts selectDashboardTasks).
 // Each row links to /tasks so a tap lands on the full filtered list.
+//
+// Error handling: a failed load (tasks.error set) renders the SAME safe
+// customer-facing message as the Tasks page plus a Retry button wired to
+// reload the dashboard tasks — a load failure is NEVER shown as the "All clear"
+// empty state (which is reserved for a genuine zero-task operation).
 // ============================================================================
 import { Link } from "@tanstack/react-router";
 import { Badge, Card, CardTitle } from "~/components/ui";
@@ -25,7 +30,17 @@ const reasonLabel: Record<string, string> = {
 const priorityBadge = (p: string): "red" | "amber" | "stone" =>
   p === "urgent" ? "red" : p === "high" ? "amber" : "stone";
 
-export function TasksSnapshot({ tasks }: { tasks: DashboardTask[] }) {
+export function TasksSnapshot({
+  tasks,
+  error,
+  onRetry,
+}: {
+  tasks: DashboardTask[];
+  /** Set when the dashboard task fetch failed; distinct from an empty task list. */
+  error?: string | null;
+  /** Re-runs the dashboard task loader (wired by the dashboard route). */
+  onRetry?: () => void;
+}) {
   const counts = dashboardCounts(tasks);
   const headline =
     counts.overdue > 0
@@ -38,9 +53,11 @@ export function TasksSnapshot({ tasks }: { tasks: DashboardTask[] }) {
     <Card className={tasks.some((t) => t.reason === "overdue") ? "border-red-200 bg-red-50/30" : ""}>
       <CardTitle
         title="Today's tasks"
-        sub={headline}
+        sub={error ? "Your board couldn't load this card." : headline}
         right={
-          tasks.length > 0 ? (
+          error ? (
+            <Badge tone="red">Couldn't load</Badge>
+          ) : tasks.length > 0 ? (
             <Badge tone={counts.overdue > 0 ? "red" : counts.dueToday > 0 ? "amber" : "blue"}>
               {tasks.length} to handle
             </Badge>
@@ -49,7 +66,20 @@ export function TasksSnapshot({ tasks }: { tasks: DashboardTask[] }) {
           )
         }
       />
-      {tasks.length === 0 ? (
+      {error ? (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-center">
+          <p className="text-sm font-medium text-stone-800">{error}</p>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="mt-3 rounded-lg border border-stone-300 bg-white px-4 py-2 text-sm font-semibold text-stone-700 transition hover:border-green-700 hover:text-green-800 active:bg-stone-100"
+            >
+              ↻ Retry
+            </button>
+          )}
+        </div>
+      ) : tasks.length === 0 ? (
         <p className="rounded-xl border border-dashed border-stone-300 p-4 text-center text-sm text-stone-500">
           Nothing overdue or due today. Add a task on the{" "}
           <Link to="/tasks" className="font-semibold text-green-700 hover:text-green-900">

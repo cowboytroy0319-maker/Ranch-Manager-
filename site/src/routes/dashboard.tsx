@@ -1,4 +1,4 @@
-import { Link, createFileRoute, redirect } from "@tanstack/react-router";
+import { Link, createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { Badge } from "~/components/ui";
 import { MorningBriefing } from "~/components/dashboard/MorningBriefing";
 import { LivestockSnapshot } from "~/components/dashboard/LivestockSnapshot";
@@ -47,6 +47,8 @@ export const Route = createFileRoute("/dashboard")({
 
 function Dashboard() {
   const { livestock, feed, pasture, equipment, costs, expenses, tax, tasks, onboarding } = Route.useLoaderData();
+  const router = useRouter();
+  const retryTasks = () => void router.invalidate();
 
   // Live headline numbers: active head from livestock, fuel spend this month.
   const activeHead = livestock.animals.filter((a) => a.status === "active").length;
@@ -124,7 +126,7 @@ function Dashboard() {
         {/* 1. Today's priorities */}
         <MorningBriefing data={{ livestock, feed, pasture, equipment }} />
         {/* 1b. Today's tasks — overdue/due-today/high-priority open work */}
-        <TasksSnapshot tasks={tasks.tasks} />
+        <TasksSnapshot tasks={tasks.tasks} error={tasks.error} onRetry={retryTasks} />
         {/* 2-3. Livestock + Feed */}
         <div className="grid gap-6 lg:grid-cols-2">
           <LivestockSnapshot data={livestock} />
