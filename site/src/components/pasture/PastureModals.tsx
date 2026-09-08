@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { savePasture, type PastureInput } from "~/server/pasture";
 import { useDraftPersistence, draftKey } from "~/components/drafts";
-import { PASTURE_STATUSES, type Pasture } from "~/types/pasture";
+import { PASTURE_CONDITIONS, WATER_STATUSES, type Pasture } from "~/types/pasture";
 import { FooterButtons, Modal, ErrorNote } from "~/components/sheet-modal";
 
 const labelCls = "block text-xs font-semibold uppercase tracking-wide text-stone-500";
@@ -34,9 +34,13 @@ export function PastureFormModal({
   const [form, setForm] = useState<PastureInput>({
     id: editing?.id,
     name: editing?.name ?? "",
-    size_acres: editing?.size_acres ?? 0,
+    size_acres: editing?.size_acres ?? null,
     location: editing?.location ?? "",
     status: editing?.status ?? "resting",
+    pasture_type: editing?.pasture_type ?? "",
+    capacity_heads: editing?.capacity_heads ?? null,
+    water_status: editing?.water_status ?? "unknown",
+    condition: editing?.condition ?? "good",
     soil_type: editing?.soil_type ?? "",
     notes: editing?.notes ?? "",
   });
@@ -44,7 +48,7 @@ export function PastureFormModal({
   const [error, setError] = useState<string | null>(null);
   const { clearDraft } = useDraftPersistence(
     draftKey(editing ? `edit-pasture-${editing.id}` : "add-pasture"),
-    form as unknown as Record<string, unknown>
+    form as unknown as Record<string, string | number | null>
   );
   const set = <K extends keyof PastureInput>(k: K, v: PastureInput[K]) => setForm((f) => ({ ...f, [k]: v }));
   const submit = async (e: React.FormEvent) => {
@@ -84,21 +88,40 @@ export function PastureFormModal({
               required
             />
           </Field>
-          <Field label="Acreage (acres) *">
+          <Field label="Acreage (acres)">
             <input
-              type="number" min={0.01} step={0.01}
+              type="number" min={0} step={0.01}
               inputMode="decimal"
               className={inputCls}
-              value={form.size_acres === 0 ? "" : form.size_acres}
-              onChange={(e) => set("size_acres", e.target.value === "" ? 0 : Number(e.target.value))}
+              value={form.size_acres === null ? "" : form.size_acres}
+              onChange={(e) => set("size_acres", e.target.value === "" ? null : Number(e.target.value))}
               placeholder="120.5"
-              required
             />
-            <p className="mt-1 text-xs text-stone-500">Must be greater than zero.</p>
+            <p className="mt-1 text-xs text-stone-500">Optional — must be greater than zero when entered.</p>
           </Field>
-          <Field label="Status">
-            <select className={inputCls} value={form.status} onChange={(e) => set("status", e.target.value as Pasture["status"])}>
-              {PASTURE_STATUSES.map((s) => (
+          <Field label="Pasture type / use">
+            <input className={inputCls} value={form.pasture_type ?? ""} onChange={(e) => set("pasture_type", e.target.value)} placeholder="Native range, hay ground, trap…" />
+          </Field>
+          <Field label="Capacity (head)">
+            <input
+              type="number" min={0} step={1}
+              inputMode="numeric"
+              className={inputCls}
+              value={form.capacity_heads === null ? "" : form.capacity_heads}
+              onChange={(e) => set("capacity_heads", e.target.value === "" ? null : Number(e.target.value))}
+              placeholder="120"
+            />
+          </Field>
+          <Field label="Water status">
+            <select className={inputCls} value={form.water_status} onChange={(e) => set("water_status", e.target.value as Pasture["water_status"])}>
+              {WATER_STATUSES.map((s) => (
+                <option key={s} value={s}>{s.replace(/_/g, " ")[0].toUpperCase() + s.replace(/_/g, " ").slice(1)}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Condition">
+            <select className={inputCls} value={form.condition} onChange={(e) => set("condition", e.target.value as Pasture["condition"])}>
+              {PASTURE_CONDITIONS.map((s) => (
                 <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>
               ))}
             </select>

@@ -20,13 +20,14 @@ const fmt = (cents: number) =>
   `$${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const catTone = (c: string): "green" | "amber" | "blue" | "red" | "stone" => {
   switch (c) {
-    case "feed":
+    case "hay_feed":
       return "green";
-    case "vet_health":
+    case "veterinary":
       return "red";
-    case "maintenance":
+    case "repairs_maintenance":
       return "amber";
     case "insurance":
+    case "fuel":
       return "blue";
     default:
       return "stone";
@@ -75,9 +76,9 @@ function ExpensesPage() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <Stat label="This month" value={hasRows ? fmt(data.totalCents) : "—"} sub={`${data.month || "this month"}`} accent />
         <Stat label="Entries" value={String(data.totalEntries)} sub="expense lines" />
-        <Stat label="Feed & Hay" value={cat("feed") ? fmt(cat("feed")!.amount_cents) : "—"} sub={`${cat("feed")?.entries ?? 0} entries`} />
-        <Stat label="Vet & Health" value={cat("vet_health") ? fmt(cat("vet_health")!.amount_cents) : "—"} sub={`${cat("vet_health")?.entries ?? 0} entries`} />
-        <Stat label="Maintenance" value={cat("maintenance") ? fmt(cat("maintenance")!.amount_cents) : "—"} sub={`${cat("maintenance")?.entries ?? 0} entries`} />
+        <Stat label="Feed & Hay" value={cat("hay_feed") ? fmt(cat("hay_feed")!.amount_cents) : "—"} sub={`${cat("hay_feed")?.entries ?? 0} entries`} />
+        <Stat label="Vet & Health" value={cat("veterinary") ? fmt(cat("veterinary")!.amount_cents) : "—"} sub={`${cat("veterinary")?.entries ?? 0} entries`} />
+        <Stat label="Repairs & Maint." value={cat("repairs_maintenance") ? fmt(cat("repairs_maintenance")!.amount_cents) : "—"} sub={`${cat("repairs_maintenance")?.entries ?? 0} entries`} />
       </div>
       <div className="grid gap-5 lg:grid-cols-5">
         {/* Current-month ledger */}
