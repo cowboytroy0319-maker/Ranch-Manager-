@@ -196,18 +196,19 @@ export const TEMPLATES: Record<TemplateSlug, CsvTemplate> = {
     title: "Expenses",
     emoji: "🧾",
     description:
-      "One row per expense. Category must be exactly feed, vet_health, maintenance, insurance, fuel, or other. Amount is in whole dollars (stored as cents internally). Dates are YYYY-MM-DD.",
+      "One row per expense. Category must be exactly one of: hay_feed, livestock, fuel, repairs_maintenance, veterinary, supplies, labor, utilities, land_pasture, insurance, taxes_fees, or other. Amount is in whole dollars (stored as cents internally). Dates are YYYY-MM-DD.",
     headerComment:
-      "# Ranch Manager Pro — expenses.csv — header row + one example row (below). Delete the example row before importing to a spreadsheet. Accepted values: category=feed|vet_health|maintenance|insurance|fuel|other. amount in dollars (non-negative); date YYYY-MM-DD. No formulas or macros in this file.",
+      "# Ranch Manager Pro — expenses.csv — header row + one example row (below). Delete the example row before importing to a spreadsheet. Accepted values: category=hay_feed|livestock|fuel|repairs_maintenance|veterinary|supplies|labor|utilities|land_pasture|insurance|taxes_fees|other. amount in dollars (greater than zero); date YYYY-MM-DD. No formulas or macros in this file.",
     fields: [
-      { name: "category", required: true, example: "vet_health", legend: "feed, vet_health, maintenance, insurance, fuel, or other (required)." },
-      { name: "amount", required: true, example: "185.00", legend: "Amount in whole dollars — non-negative (required)." },
+      { name: "category", required: true, example: "hay_feed", legend: "hay_feed, livestock, fuel, repairs_maintenance, veterinary, supplies, labor, utilities, land_pasture, insurance, taxes_fees, or other (required)." },
+      { name: "amount", required: true, example: "185.00", legend: "Amount in whole dollars — must be greater than zero (required)." },
       { name: "date", required: true, example: "2026-07-12", legend: "Expense date YYYY-MM-DD (required)." },
-      { name: "vendor", required: false, example: "High Plains Vet", legend: "Free text vendor." },
+      { name: "vendor", required: true, example: "High Plains Vet", legend: "Payee / description — what or who the money went to (required)." },
+      { name: "paid_by", required: false, example: "T Bar T", legend: "Who paid (optional free text)." },
       { name: "job", required: false, example: "Fall processing", legend: "Free text job/activity (for cost allocation)." },
       { name: "notes", required: false, example: "Cow herd vaccinations", legend: "Free text notes." },
     ],
-    exampleRow: ["vet_health", "185.00", "2026-07-12", "High Plains Vet", "Fall processing", "Cow herd vaccinations"],
+    exampleRow: ["hay_feed", "185.00", "2026-07-12", "High Plains Vet", "T Bar T", "Fall processing", "Cow herd vaccinations"],
   },
   tasks: {
     slug: "tasks",
