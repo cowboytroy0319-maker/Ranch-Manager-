@@ -213,7 +213,10 @@ function parseHealthEventInput(raw: unknown): HealthEventInput {
 export const saveAnimal = createServerFn({ method: "POST" })
   .validator(parseAnimalInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     const a = data;
     const tag = a.tag_number.trim();
     try {
@@ -268,7 +271,10 @@ export const saveAnimal = createServerFn({ method: "POST" })
 export const addHealthEvent = createServerFn({ method: "POST" })
   .validator(parseHealthEventInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();

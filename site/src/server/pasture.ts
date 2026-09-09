@@ -208,7 +208,10 @@ function parseStatusOrThrow<T extends string>(v: unknown, allowed: readonly T[],
 export const savePasture = createServerFn({ method: "POST" })
   .validator(parsePastureInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       return await savePastureCore(sql(), auth.operationId, data);
@@ -286,7 +289,10 @@ export const savePastureActivity = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<
     { ok: true; id: number; expense_created: boolean } | { ok: false; error: string }
   > => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       return await savePastureActivityCore(sql(), auth.operationId, data);
@@ -359,7 +365,10 @@ export function parseMoveLivestockInput(raw: unknown): MoveLivestockInput {
 export const moveLivestock = createServerFn({ method: "POST" })
   .validator(parseMoveLivestockInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       return await moveLivestockCore(sql(), auth.operationId, data);

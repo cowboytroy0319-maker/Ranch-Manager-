@@ -249,7 +249,10 @@ export function parseExpenseInput(raw: unknown): ExpenseInput {
 export const saveExpense = createServerFn({ method: "POST" })
   .validator(parseExpenseInput)
   .handler(async ({ data: e }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       return await saveExpenseCore(sql(), auth.operationId, e);
@@ -305,7 +308,10 @@ export const deleteExpense = createServerFn({ method: "POST" })
     return id;
   })
   .handler(async ({ data: id }): Promise<{ ok: true } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       return await deleteExpenseCore(sql(), auth.operationId, id);

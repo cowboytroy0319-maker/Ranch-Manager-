@@ -26,9 +26,11 @@ export const sql = (): postgres.Sql => {
   if (client) return client;
   const url = process.env.DATABASE_URL;
   if (!url) {
-    throw new Error(
-      "DATABASE_URL is not set — connect a database before running queries."
-    );
+    // This error can reach the client through handler catch blocks that pass
+    // err.message through, so keep it customer-safe; the technical detail is
+    // logged server-side only.
+    console.error("DATABASE_URL is not set — connect a database before running queries.");
+    throw new Error("We couldn't complete that right now. Please try again.");
   }
   // Neon (and most hosted Postgres) requires TLS; a local dev Postgres usually
   // doesn't. `prefer` negotiates TLS when the server offers it and falls back
