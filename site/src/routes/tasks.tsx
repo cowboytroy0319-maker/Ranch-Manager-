@@ -12,6 +12,7 @@ import { useMemo, useState } from "react";
 import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
+import { TemplatesLink } from "~/components/TemplatesLink";
 import { TaskForm, type LinkLists, type TaskFormValue } from "~/components/tasks/TaskForm";
 import {
   completeTask,
@@ -274,6 +275,7 @@ function TasksPage() {
                   today&apos;s list — pulling calves, a pasture move, fence work, an oil change, or tomorrow&apos;s paperwork. Saved
                   tasks land in this list and flow to the Daily Operations dashboard once they&apos;re overdue, due today, or high priority.
                 </p>
+                <TemplatesLink className="mt-3 justify-center" />
               </div>
             ) : (
               <p className="text-sm text-stone-500">No tasks match the current filters.</p>

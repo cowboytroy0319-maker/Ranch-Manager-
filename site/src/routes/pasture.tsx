@@ -1,13 +1,32 @@
 import { Link, createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { getPastureData } from "~/server/pasture";
-import { PastureFormModal } from "~/components/pasture/PastureModals";
+import {
+  PastureFormModal,
+  PastureDetailModal,
+  ActivityFormModal,
+  MoveGroupModal,
+  QuickFieldModal,
+} from "~/components/pasture/PastureModals";
+import { useAddIntent } from "~/components/useAddIntent";
+import { TemplatesLink } from "~/components/TemplatesLink";
 import type { Pasture, Species } from "~/types/pasture";
 
 export const Route = createFileRoute("/pasture")({
+  validateSearch: (search: Record<string, unknown>): { add?: string; open?: number } => {
+    const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+    const num = (v: unknown): number | undefined => {
+      const s = str(v);
+      if (s == null) return undefined;
+      const n = Number(s);
+      return Number.isInteger(n) && n > 0 ? n : undefined;
+    };
+    return { add: str(search.add), open: num(search.open) };
+  },
+
   beforeLoad: async () => {
     const session = await getSession();
     if (!session.authed) throw redirect({ to: "/login", search: { reason: "auth" } });
@@ -406,11 +425,44 @@ type PastureRow = {
 
 function PasturePage() {
   const data = Route.useLoaderData();
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
   const router = useRouter();
   const refresh = () => router.invalidate();
 
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<Pasture | null>(null);
+  // Pasture DETAIL view — opened by tapping a row, or via ?open=<id> (the
+  // deep link an expense's "↳ pasture activity" indicator uses).
+  const [detailId, setDetailId] = useState<number | null>(null);
+  const [action, setAction] = useState<{ kind: "activity" | "move" | "condition" | "water"; pasture: Pasture } | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (search.open == null) return;
+    if (data.pastures.some((p) => p.id === search.open)) setDetailId(search.open);
+    void navigate({ search: (prev) => ({ ...prev, open: undefined }), replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search.open]);
+
+  // ?add=pasture (MobileNav Quick Add) opens the create modal directly.
+  const { add, clear: clearAdd } = useAddIntent(["pasture"]);
+  useEffect(() => {
+    if (add === "pasture") {
+      setEditing(null);
+      setAddOpen(true);
+      clearAdd();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [add]);
+
+  const onActionDone = (message: string) => {
+    setAction(null);
+    setFlash(message);
+    refresh();
+  };
+
+  const detailPasture = detailId != null ? data.pastures.find((p) => p.id === detailId) ?? null : null;
 
   const meta = useMemo(() => {
     const windowStart = new Date(Date.now() - 20 * 86400000).toISOString().slice(0, 10);
@@ -458,9 +510,9 @@ function PasturePage() {
   }, [data.pastures, data.assignments, meta]);
 
   const totals = useMemo(() => {
-    const acres = data.pastures.reduce((s, p) => s + Number(p.size_acres), 0);
+    const acres = data.pastures.reduce((s, p) => s + (p.size_acres != null ? Number(p.size_acres) : 0), 0);
     const grazing = rows.filter((r) => r.currentStatus === "grazing");
-    const grazingAcres = grazing.reduce((s, r) => s + Number(r.pasture.size_acres), 0);
+    const grazingAcres = grazing.reduce((s, r) => s + (r.pasture.size_acres != null ? Number(r.pasture.size_acres) : 0), 0);
     return {
       acres,
       paddocks: data.pastures.length,
@@ -591,6 +643,7 @@ function PasturePage() {
                 <th className="py-2 pr-3">Assigned herd</th>
                 <th className="py-2 pr-3">Grazing</th>
                 <th className="py-2 pr-3">Rest</th>
+                <th className="py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-stone-100">
@@ -599,11 +652,18 @@ function PasturePage() {
                 return (
                   <tr key={r.pasture.id} className="align-top transition hover:bg-green-50/50">
                     <td className="py-2.5 pr-3">
-                      <span className="font-semibold text-stone-900">🌾 {r.pasture.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setDetailId(r.pasture.id)}
+                        className="inline-flex min-h-11 items-center text-left font-semibold text-stone-900 transition hover:text-green-800"
+                        title={`Open ${r.pasture.name} detail`}
+                      >
+                        🌾 {r.pasture.name}
+                      </button>
                       {r.pasture.notes && <span className="block max-w-xs text-xs text-stone-400">{r.pasture.notes}</span>}
                     </td>
                     <td className="whitespace-nowrap py-2.5 pr-3 font-medium text-stone-700">
-                      {Number(r.pasture.size_acres).toLocaleString()}
+                      {r.pasture.size_acres != null ? Number(r.pasture.size_acres).toLocaleString() : "—"}
                     </td>
                     <td className="py-2.5 pr-3 text-stone-600">{r.pasture.location ?? "—"}</td>
                     <td className="whitespace-nowrap py-2.5 pr-3">
@@ -627,15 +687,23 @@ function PasturePage() {
                     <td className="whitespace-nowrap py-2.5 pr-3 text-xs text-stone-600">
                       <span className="text-stone-900">{r.grazed21}d</span> grazed · <span className="text-stone-900">{r.rested21}d</span> rest
                     </td>
+                    <td className="whitespace-nowrap py-2.5 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setDetailId(r.pasture.id)}
+                        className="min-h-11 rounded-lg border border-stone-200 px-3 py-2 text-xs font-semibold text-stone-700 transition hover:border-green-700 hover:text-green-800"
+                      >
+                        View / manage
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-8 text-center text-sm text-stone-500">
-                    No paddocks on record yet — hit “+ Add pasture” above to map your first one, or run{" "}
-                    <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">bun run db:seed</code> for the demo
-                    rotation.
+                  <td colSpan={8} className="py-8 text-center text-sm text-stone-500">
+                    No paddocks on record yet — hit “+ Add pasture” above to map your first one.
+                    <TemplatesLink className="mt-3 justify-center" />
                   </td>
                 </tr>
               )}
@@ -664,6 +732,47 @@ function PasturePage() {
           onClose={() => { setEditing(null); setAddOpen(false); }}
           onSaved={() => { setEditing(null); setAddOpen(false); refresh(); }}
         />
+      ) : null}
+
+      {/* Pasture detail (tap a row) — with its action forms layered on top */}
+      {detailPasture && !action ? (
+        <PastureDetailModal
+          pasture={detailPasture}
+          data={data}
+          onClose={() => setDetailId(null)}
+          onAction={(a) => setAction(a)}
+        />
+      ) : null}
+      {action?.kind === "activity" ? (
+        <ActivityFormModal pasture={action.pasture} onClose={() => setAction(null)} onSaved={onActionDone} />
+      ) : null}
+      {action?.kind === "move" ? (
+        <MoveGroupModal pasture={action.pasture} data={data} onClose={() => setAction(null)} onSaved={onActionDone} />
+      ) : null}
+      {action?.kind === "condition" || action?.kind === "water" ? (
+        <QuickFieldModal
+          pasture={action.pasture}
+          field={action.kind === "water" ? "water_status" : "condition"}
+          onClose={() => setAction(null)}
+          onSaved={onActionDone}
+        />
+      ) : null}
+
+      {/* Save-outcome flash — states exactly what was recorded */}
+      {flash ? (
+        <div className="fixed inset-x-3 bottom-20 z-[70] sm:left-auto sm:right-6 sm:w-96">
+          <div className="rounded-xl border border-green-200 bg-white px-4 py-3 text-sm font-semibold text-green-900 shadow-xl">
+            <span className="mr-1.5">✅</span>
+            {flash}
+            <button
+              onClick={() => setFlash(null)}
+              className="ml-3 min-h-11 text-stone-400 transition hover:text-stone-700"
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
       ) : null}
     </Shell>
   );

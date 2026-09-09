@@ -1,10 +1,12 @@
 import { Link, createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
-import { FeedFormModal, HayFormModal, LogUsageModal, hayLabel } from "~/components/feed/FeedModals";
+import { FeedFormModal, HayFormModal, LogUsageModal, RestockModal, hayLabel } from "~/components/feed/FeedModals";
 import { getFeedData } from "~/server/feed";
+import { useAddIntent } from "~/components/useAddIntent";
+import { TemplatesLink } from "~/components/TemplatesLink";
 import {
   USAGE_RATE_WINDOW_DAYS,
   fmtQty,
@@ -45,11 +47,30 @@ function FeedPage() {
   const [addFeedOpen, setAddFeedOpen] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
   const [usageSel, setUsageSel] = useState<{ kind: "hay" | "feed"; id: number } | null>(null);
+  // Restock is its OWN action — never the edit form.
+  const [restockOpen, setRestockOpen] = useState(false);
+  const [restockSel, setRestockSel] = useState<{ kind: "hay" | "feed"; id: number } | null>(null);
+  const [restockMessage, setRestockMessage] = useState<string | null>(null);
 
   const openUsage = (sel: { kind: "hay" | "feed"; id: number } | null) => {
     setUsageSel(sel);
     setUsageOpen(true);
   };
+  const openRestock = (sel: { kind: "hay" | "feed"; id: number } | null) => {
+    setRestockSel(sel);
+    setRestockOpen(true);
+    setRestockMessage(null);
+  };
+
+  // ?add=hay / ?add=feed / ?add=usage (MobileNav Quick Add) open the matching
+  // flow directly on the phone.
+  const { add, clear: clearAdd } = useAddIntent(["hay", "feed", "usage"]);
+  useEffect(() => {
+    if (add === "hay") { setAddHayOpen(true); clearAdd(); }
+    else if (add === "feed") { setAddFeedOpen(true); clearAdd(); }
+    else if (add === "usage") { openUsage(null); clearAdd(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [add]);
 
   const pastures = useMemo(
     () =>
@@ -200,10 +221,16 @@ function FeedPage() {
                   Log use
                 </button>
                 <button
-                  onClick={() => (kind === "hay" ? setEditingHay(item as HayItem) : setEditingFeed(item as FeedItem))}
-                  className="rounded-lg border border-stone-200 px-2.5 py-1 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
+                  onClick={() => openRestock({ kind, id: item.id })}
+                  className="min-h-11 rounded-lg border border-green-700/40 bg-green-50 px-3 py-2 text-xs font-semibold text-green-800 transition hover:bg-green-100"
                 >
                   Restock
+                </button>
+                <button
+                  onClick={() => (kind === "hay" ? setEditingHay(item as HayItem) : setEditingFeed(item as FeedItem))}
+                  className="min-h-11 rounded-lg border border-stone-200 px-3 py-2 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
+                >
+                  Edit
                 </button>
               </div>
             ))}
@@ -273,13 +300,19 @@ function FeedPage() {
                     <td className="whitespace-nowrap py-2.5 text-right">
                       <button
                         onClick={() => openUsage({ kind: "hay", id: h.id })}
-                        className="mr-1.5 rounded-lg border border-green-700/40 bg-green-50 px-2.5 py-1 text-xs font-semibold text-green-800 transition hover:bg-green-100"
+                        className="mr-1.5 min-h-11 rounded-lg border border-green-700/40 bg-green-50 px-3 py-2 text-xs font-semibold text-green-800 transition hover:bg-green-100"
                       >
                         Log use
                       </button>
                       <button
+                        onClick={() => openRestock({ kind: "hay", id: h.id })}
+                        className="mr-1.5 min-h-11 rounded-lg border border-green-700/40 bg-white px-3 py-2 text-xs font-semibold text-green-800 transition hover:bg-green-50"
+                      >
+                        Restock
+                      </button>
+                      <button
                         onClick={() => setEditingHay(h)}
-                        className="rounded-lg border border-stone-200 px-2.5 py-1 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
+                        className="min-h-11 rounded-lg border border-stone-200 px-3 py-2 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
                       >
                         Edit
                       </button>
@@ -290,8 +323,8 @@ function FeedPage() {
               {data.hay.length === 0 && (
                 <tr>
                   <td colSpan={9} className="py-8 text-center text-sm text-stone-500">
-                    The hay yard is empty — add your first stack, or run{" "}
-                    <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">bun run db:seed</code> for the demo yard.
+                    The hay yard is empty — add your first stack with “+ Add hay stack” above.
+                    <TemplatesLink className="mt-3 justify-center" />
                   </td>
                 </tr>
               )}
@@ -346,13 +379,19 @@ function FeedPage() {
                     <td className="whitespace-nowrap py-2.5 text-right">
                       <button
                         onClick={() => openUsage({ kind: "feed", id: f.id })}
-                        className="mr-1.5 rounded-lg border border-green-700/40 bg-green-50 px-2.5 py-1 text-xs font-semibold text-green-800 transition hover:bg-green-100"
+                        className="mr-1.5 min-h-11 rounded-lg border border-green-700/40 bg-green-50 px-3 py-2 text-xs font-semibold text-green-800 transition hover:bg-green-100"
                       >
                         Log use
                       </button>
                       <button
+                        onClick={() => openRestock({ kind: "feed", id: f.id })}
+                        className="mr-1.5 min-h-11 rounded-lg border border-green-700/40 bg-white px-3 py-2 text-xs font-semibold text-green-800 transition hover:bg-green-50"
+                      >
+                        Restock
+                      </button>
+                      <button
                         onClick={() => setEditingFeed(f)}
-                        className="rounded-lg border border-stone-200 px-2.5 py-1 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
+                        className="min-h-11 rounded-lg border border-stone-200 px-3 py-2 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
                       >
                         Edit
                       </button>
@@ -363,8 +402,8 @@ function FeedPage() {
               {data.feed.length === 0 && (
                 <tr>
                   <td colSpan={8} className="py-8 text-center text-sm text-stone-500">
-                    No feed items yet — add cubes, mineral, or grain, or run{" "}
-                    <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">bun run db:seed</code>.
+                    No feed items yet — add cubes, mineral, or grain with “+ Add feed item” above.
+                    <TemplatesLink className="mt-3 justify-center" />
                   </td>
                 </tr>
               )}
@@ -401,7 +440,7 @@ function FeedPage() {
         )}
       </Card>
 
-      {/* Modals */}
+      {/* Restock / add flows */}
       {addHayOpen || editingHay ? (
         <HayFormModal
           key={editingHay ? `edit-${editingHay.id}` : "add-hay"}
@@ -432,6 +471,34 @@ function FeedPage() {
           }}
         />
       ) : null}
+      {restockOpen && (
+        <RestockModal
+          hay={data.hay}
+          feed={data.feed}
+          preselect={restockSel}
+          onClose={() => setRestockOpen(false)}
+          onSaved={(message) => {
+            setRestockOpen(false);
+            setRestockMessage(message);
+            refresh();
+          }}
+        />
+      )}
+      {restockMessage && (
+        <div className="fixed inset-x-3 bottom-20 z-[70] sm:left-auto sm:right-6 sm:w-96">
+          <div className="rounded-xl border border-green-200 bg-white px-4 py-3 text-sm font-semibold text-green-900 shadow-xl">
+            <span className="mr-1.5">✅</span>
+            {restockMessage}
+            <button
+              onClick={() => setRestockMessage(null)}
+              className="ml-3 min-h-11 text-stone-400 transition hover:text-stone-700"
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
       {usageOpen && (
         <LogUsageModal
           hay={data.hay}

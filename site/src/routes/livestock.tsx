@@ -3,6 +3,7 @@ import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
 import { useMemo, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
+import { TemplatesLink } from "~/components/TemplatesLink";
 import {
   AnimalDetailModal,
   AnimalFormModal,
@@ -374,9 +375,14 @@ function LivestockPage() {
               {filtered.length === 0 && (
                 <tr>
                   <td colSpan={8} className="py-8 text-center text-sm text-stone-500">
-                    {data.animals.length === 0
-                      ? "No animals on record yet — add your first, or run `bun run db:seed` to load the demo operation."
-                      : "No animals match the current filters."}
+                    {data.animals.length === 0 ? (
+                      <>
+                        No animals on record yet — add your first, or run `bun run db:seed` to load the demo operation.
+                        <TemplatesLink className="mt-3 justify-center" />
+                      </>
+                    ) : (
+                      "No animals match the current filters."
+                    )}
                   </td>
                 </tr>
               )}

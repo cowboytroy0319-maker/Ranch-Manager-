@@ -3,6 +3,7 @@ import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
 import { useMemo, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
+import { TemplatesLink } from "~/components/TemplatesLink";
 import { getEquipmentData } from "~/server/equipment";
 import { EquipmentFormModal } from "~/components/equipment/EquipmentModals";
 import { LogFuelModal, LogServiceModal } from "~/components/equipment/TrackingModals";
@@ -267,6 +268,7 @@ function EquipmentPage() {
                 <tr>
                   <td colSpan={8} className="py-8 text-center text-sm text-stone-500">
                     No equipment registered yet — add your first unit with “+ Add equipment” above.
+                    <TemplatesLink className="mt-3 justify-center" />
                   </td>
                 </tr>
               )}
