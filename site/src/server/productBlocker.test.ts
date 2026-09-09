@@ -46,12 +46,16 @@ import {
   updateRestockCore,
 } from "./feed";
 import {
+  deletePastureActivityCore,
   moveLivestockCore,
   parseMoveLivestockInput,
+  parsePastureActivityEditInput,
   parsePastureActivityInput,
   parsePastureInput,
+  PASTURE_ACTIVITY_DUPLICATE_MESSAGE,
   savePastureActivityCore,
   savePastureCore,
+  updatePastureActivityCore,
 } from "./pasture";
 import { buildTemplateCsv } from "./onboarding";
 import { EXPENSE_CATEGORIES, CATEGORY_LABEL } from "~/types/expenses";
@@ -156,6 +160,7 @@ describe("operation scoping — every new write is scoped to the session operati
 
   test("savePastureActivityCore rejects a pasture from ANOTHER operation", async () => {
     const res = await savePastureActivityCore(db, opAId, {
+      client_request_id: `cross-op-activity-${Date.now()}`,
       pasture_id: pastureB1,
       activity_date: inMonth(),
       activity_type: "fencing",
@@ -758,6 +763,7 @@ describe("inventory safety — corrections that would go below zero are blocked,
 describe("savePastureActivity — linked expense rules", () => {
   test("activity with cost + record_expense=true creates ONE linked expense", async () => {
     const res = await savePastureActivityCore(db, opAId, {
+      client_request_id: `activity-cost-${Date.now()}`,
       pasture_id: pastureA1,
       activity_date: inMonth(),
       activity_type: "fencing",
@@ -787,6 +793,7 @@ describe("savePastureActivity — linked expense rules", () => {
 
   test("activity without cost, or record_expense=false, creates NO expense", async () => {
     const a1 = await savePastureActivityCore(db, opAId, {
+      client_request_id: `activity-nocost-${Date.now()}`,
       pasture_id: pastureA1,
       activity_date: inMonth(),
       activity_type: "inspection",
@@ -800,6 +807,7 @@ describe("savePastureActivity — linked expense rules", () => {
     expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${a1.id} AND operation_id=${opAId}`).length).toBe(0);
 
     const a2 = await savePastureActivityCore(db, opAId, {
+      client_request_id: `activity-unchecked-${Date.now()}`,
       pasture_id: pastureA1,
       activity_date: inMonth(),
       activity_type: "spraying",
@@ -817,12 +825,355 @@ describe("savePastureActivity — linked expense rules", () => {
   });
 
   test("parsePastureActivityInput validates the 10 activity types + non-negative cost", () => {
-    expect(() => parsePastureActivityInput({ pasture_id: 1, activity_date: "2026-09-01", activity_type: "nope", cost_cents: 1 })).toThrow("Pick an activity type.");
-    expect(() => parsePastureActivityInput({ pasture_id: 1, activity_date: "2026-09-01", activity_type: "fencing", cost_cents: -5 })).toThrow("Cost can't be negative.");
-    const out = parsePastureActivityInput({ pasture_id: 1, activity_date: "2026-09-01", activity_type: "water_system", cost_cents: "", record_expense: false });
+    expect(() => parsePastureActivityInput({ pasture_id: 1, activity_date: "2026-09-01", activity_type: "nope", cost_cents: 1, client_request_id: "k1" })).toThrow("Pick an activity type.");
+    expect(() => parsePastureActivityInput({ pasture_id: 1, activity_date: "2026-09-01", activity_type: "fencing", cost_cents: -5, client_request_id: "k1" })).toThrow("Cost can't be negative.");
+    const out = parsePastureActivityInput({ pasture_id: 1, activity_date: "2026-09-01", activity_type: "water_system", cost_cents: "", record_expense: false, client_request_id: "k1" });
     expect(out.cost_cents).toBeNull();
     expect(out.record_expense).toBe(false);
     expect(ACTIVITY_TYPES.length).toBe(10);
+  });
+
+  test("parsePastureActivityInput requires a client_request_id (idempotency key)", () => {
+    expect(() => parsePastureActivityInput({ pasture_id: 1, activity_date: "2026-09-01", activity_type: "fencing", cost_cents: null })).toThrow(
+      "A request id is required"
+    );
+    expect(() => parsePastureActivityInput({ client_request_id: "", pasture_id: 1, activity_date: "2026-09-01", activity_type: "fencing" })).toThrow(
+      "A request id is required"
+    );
+    expect(() => parsePastureActivityInput({ client_request_id: "x".repeat(201), pasture_id: 1, activity_date: "2026-09-01", activity_type: "fencing" })).toThrow(
+      "Request id is too long"
+    );
+    expect(parsePastureActivityInput({ client_request_id: "key-1", pasture_id: 1, activity_date: "2026-09-01", activity_type: "fencing" }).client_request_id).toBe("key-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6b. Pasture activity IDEMPOTENCY + CORRECTION PATH — a retry can never
+//     double-record work or money; edits and deletes keep the linked expense
+//     and the work log telling one story (atomically, no partial states);
+//     cross-operation ids are rejected everywhere.
+// ---------------------------------------------------------------------------
+
+describe("pasture activity idempotency + correction path", () => {
+  test("re-running the SAME client_request_id is a duplicate — exactly ONE activity row + ONE linked expense, original values kept", async () => {
+    const reqId = `activity-retry-${Date.now()}`;
+    const first = await savePastureActivityCore(db, opAId, {
+      client_request_id: reqId,
+      pasture_id: pastureA1,
+      activity_date: inMonth(),
+      activity_type: "fencing",
+      cost_cents: 50000,
+      notes: "first try",
+      record_expense: true,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.error);
+    expect(first.duplicate).toBe(false);
+    expect(first.expense_created).toBe(true);
+
+    // Double-tap / retry / back-nav: the SAME key again — even with a wildly
+    // different payload. Nothing new may be created, nothing may be mutated.
+    const retry = await savePastureActivityCore(db, opAId, {
+      client_request_id: reqId,
+      pasture_id: pastureA2, // would be a different pasture if it ran — it must NOT
+      activity_date: inMonth(),
+      activity_type: "mowing",
+      cost_cents: 999999,
+      notes: "retry must not apply",
+      record_expense: true,
+    });
+    expect(retry.ok).toBe(true);
+    if (!retry.ok) throw new Error(retry.error);
+    expect(retry.duplicate).toBe(true);
+    expect(retry.id).toBe(first.id);
+    expect(retry.expense_created).toBe(true); // the original's linked expense still exists
+
+    // Exactly ONE activity row for that key, keeping the ORIGINAL values.
+    const rows = await db<{ activity_type: string; cost_cents: number; pasture_id: number; notes: string | null }[]>`
+      SELECT activity_type, cost_cents, pasture_id, notes FROM pasture_activities
+      WHERE client_request_id=${reqId} AND operation_id=${opAId}`;
+    expect(rows.length).toBe(1);
+    expect(rows[0].activity_type).toBe("fencing");
+    expect(rows[0].cost_cents).toBe(50000);
+    expect(rows[0].pasture_id).toBe(pastureA1);
+    expect(rows[0].notes).toBe("first try");
+
+    // Exactly ONE linked expense for it.
+    const linked = await db<{ id: number }[]>`
+      SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${first.id} AND operation_id=${opAId}`;
+    expect(linked.length).toBe(1);
+
+    await db`DELETE FROM expenses WHERE id=${linked[0].id}`;
+    await db`DELETE FROM pasture_activities WHERE id=${first.id}`;
+  });
+
+  test("the duplicate outcome is the plain already-recorded message (no overclaiming)", () => {
+    expect(PASTURE_ACTIVITY_DUPLICATE_MESSAGE).toBe("Already recorded — activity and expense unchanged.");
+  });
+
+  test("editing an activity upserts THE ONE linked expense atomically — amount/date/notes follow", async () => {
+    const created = await savePastureActivityCore(db, opAId, {
+      client_request_id: `activity-edit-${Date.now()}`,
+      pasture_id: pastureA1,
+      activity_date: "2026-09-05",
+      activity_type: "fencing",
+      cost_cents: 40000,
+      notes: "original",
+      record_expense: true,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.error);
+
+    const edited = await updatePastureActivityCore(db, opAId, {
+      id: created.id,
+      activity_date: "2026-09-08",
+      activity_type: "water_system",
+      cost_cents: 65000,
+      notes: "fixed the trough instead",
+      record_expense: true,
+    });
+    expect(edited.ok).toBe(true);
+    if (!edited.ok) throw new Error(edited.error);
+    expect(edited.expense_linked).toBe(true);
+
+    // The activity row itself follows the edit.
+    const [act] = await db<{ activity_type: string; cost_cents: number; activity_date: string }[]>`
+      SELECT activity_type, cost_cents, to_char(activity_date, 'YYYY-MM-DD') AS activity_date
+      FROM pasture_activities WHERE id=${created.id}`;
+    expect(act.activity_type).toBe("water_system");
+    expect(act.cost_cents).toBe(65000);
+    expect(act.activity_date).toBe("2026-09-08");
+
+    // Still exactly ONE linked expense, and amount/date/pasture/notes followed.
+    const linked = await db<{ id: number; amount_cents: number; expense_date: string; notes: string; pasture_id: number; category: string }[]>`
+      SELECT id, amount_cents, to_char(expense_date, 'YYYY-MM-DD') AS expense_date, notes, pasture_id, category
+      FROM expenses WHERE source_type='pasture_activity' AND source_id=${created.id} AND operation_id=${opAId}`;
+    expect(linked.length).toBe(1);
+    expect(linked[0].amount_cents).toBe(65000);
+    expect(linked[0].expense_date).toBe("2026-09-08");
+    expect(linked[0].notes).toContain("water_system");
+    expect(linked[0].pasture_id).toBe(pastureA1);
+    expect(linked[0].category).toBe("land_pasture");
+
+    // Retry the same edit — values are absolute, so the outcome is identical
+    // (still one expense, same amount): naturally idempotent.
+    const again = await updatePastureActivityCore(db, opAId, {
+      id: created.id,
+      activity_date: "2026-09-08",
+      activity_type: "water_system",
+      cost_cents: 65000,
+      notes: "fixed the trough instead",
+      record_expense: true,
+    });
+    expect(again.ok).toBe(true);
+    if (!again.ok) throw new Error(again.error);
+    const afterRetry = await db<{ id: number; amount_cents: number }[]>`
+      SELECT id, amount_cents FROM expenses
+      WHERE source_type='pasture_activity' AND source_id=${created.id} AND operation_id=${opAId}`;
+    expect(afterRetry.length).toBe(1);
+    expect(afterRetry[0].amount_cents).toBe(65000);
+
+    await db`DELETE FROM expenses WHERE id=${linked[0].id}`;
+    await db`DELETE FROM pasture_activities WHERE id=${created.id}`;
+  });
+
+  test("editing an activity with NO cost before it had one just keeps working (expense created on edit)", async () => {
+    const created = await savePastureActivityCore(db, opAId, {
+      client_request_id: `activity-addcost-${Date.now()}`,
+      pasture_id: pastureA2,
+      activity_date: inMonth(),
+      activity_type: "mowing",
+      cost_cents: null,
+      notes: null,
+      record_expense: true,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.error);
+
+    const edited = await updatePastureActivityCore(db, opAId, {
+      id: created.id,
+      activity_date: inMonth(),
+      activity_type: "mowing",
+      cost_cents: 22000,
+      notes: "contractor",
+      record_expense: true,
+    });
+    expect(edited.ok).toBe(true);
+    if (!edited.ok) throw new Error(edited.error);
+    expect(edited.expense_linked).toBe(true);
+
+    const linked = await db<{ amount_cents: number }[]>`
+      SELECT amount_cents FROM expenses WHERE source_type='pasture_activity' AND source_id=${created.id} AND operation_id=${opAId}`;
+    expect(linked.length).toBe(1);
+    expect(linked[0].amount_cents).toBe(22000);
+
+    await db`DELETE FROM expenses WHERE source_type='pasture_activity' AND source_id=${created.id} AND operation_id=${opAId}`;
+    await db`DELETE FROM pasture_activities WHERE id=${created.id}`;
+  });
+
+  test("editing an activity to cost 0/blank REMOVES the linked expense but KEEPS the activity", async () => {
+    const created = await savePastureActivityCore(db, opAId, {
+      client_request_id: `activity-clearcost-${Date.now()}`,
+      pasture_id: pastureA1,
+      activity_date: inMonth(),
+      activity_type: "fertilizing",
+      cost_cents: 30000,
+      notes: null,
+      record_expense: true,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.error);
+    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${created.id} AND operation_id=${opAId}`).length).toBe(1);
+
+    const cleared = await updatePastureActivityCore(db, opAId, {
+      id: created.id,
+      activity_date: inMonth(),
+      activity_type: "fertilizing",
+      cost_cents: 0, // operator cleared the cost field
+      notes: "own spreader — no cost",
+      record_expense: true,
+    });
+    expect(cleared.ok).toBe(true);
+    if (!cleared.ok) throw new Error(cleared.error);
+    expect(cleared.expense_linked).toBe(false);
+
+    // The expense is gone; the activity row itself is KEPT (with cost 0 → NULL).
+    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${created.id} AND operation_id=${opAId}`).length).toBe(0);
+    const [act] = await db<{ cost_cents: number | null; notes: string | null }[]>`
+      SELECT cost_cents, notes FROM pasture_activities WHERE id=${created.id}`;
+    expect(act.cost_cents).toBeNull();
+    expect(act.notes).toBe("own spreader — no cost");
+
+    await db`DELETE FROM pasture_activities WHERE id=${created.id}`;
+  });
+
+  test("editing with record_expense=false REMOVES the linked expense", async () => {
+    const created = await savePastureActivityCore(db, opAId, {
+      client_request_id: `activity-uncheck-edit-${Date.now()}`,
+      pasture_id: pastureA2,
+      activity_date: inMonth(),
+      activity_type: "spraying",
+      cost_cents: 18000,
+      notes: null,
+      record_expense: true,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.error);
+    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${created.id} AND operation_id=${opAId}`).length).toBe(1);
+
+    const unchecked = await updatePastureActivityCore(db, opAId, {
+      id: created.id,
+      activity_date: inMonth(),
+      activity_type: "spraying",
+      cost_cents: 18000, // cost stays, but the operator unchecked the box
+      notes: null,
+      record_expense: false,
+    });
+    expect(unchecked.ok).toBe(true);
+    if (!unchecked.ok) throw new Error(unchecked.error);
+    expect(unchecked.expense_linked).toBe(false);
+
+    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${created.id} AND operation_id=${opAId}`).length).toBe(0);
+    // The activity (and its cost) stays on the books.
+    expect((await db`SELECT id FROM pasture_activities WHERE id=${created.id} AND cost_cents=18000`).length).toBe(1);
+
+    await db`DELETE FROM pasture_activities WHERE id=${created.id}`;
+  });
+
+  test("delete removes the activity AND its linked expense in ONE transaction", async () => {
+    const created = await savePastureActivityCore(db, opAId, {
+      client_request_id: `activity-delete-${Date.now()}`,
+      pasture_id: pastureA1,
+      activity_date: inMonth(),
+      activity_type: "repair",
+      cost_cents: 77000,
+      notes: "gate hinge",
+      record_expense: true,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.error);
+
+    const del = await deletePastureActivityCore(db, opAId, created.id);
+    expect(del.ok).toBe(true);
+    if (!del.ok) throw new Error(del.error);
+    expect(del.alreadyDeleted).toBe(false);
+    expect(del.linked_expense_removed).toBe(true);
+    expect((await db`SELECT id FROM pasture_activities WHERE id=${created.id}`).length).toBe(0);
+    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${created.id} AND operation_id=${opAId}`).length).toBe(0);
+  });
+
+  test("deleting TWICE is safe — the second call reports the plain already-removed outcome", async () => {
+    const created = await savePastureActivityCore(db, opAId, {
+      client_request_id: `activity-delete-twice-${Date.now()}`,
+      pasture_id: pastureA1,
+      activity_date: inMonth(),
+      activity_type: "other",
+      cost_cents: 11000,
+      notes: null,
+      record_expense: true,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error(created.error);
+
+    const first = await deletePastureActivityCore(db, opAId, created.id);
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.error);
+    expect(first.alreadyDeleted).toBe(false);
+
+    const second = await deletePastureActivityCore(db, opAId, created.id);
+    expect(second.ok).toBe(true); // never a raw error
+    if (!second.ok) throw new Error(second.error);
+    expect(second.alreadyDeleted).toBe(true);
+    expect(second.linked_expense_removed).toBe(false);
+  });
+
+  test("parsePastureActivityEditInput rejects a missing id / bad date / bad type", () => {
+    expect(() => parsePastureActivityEditInput({ activity_date: "2026-09-01", activity_type: "fencing" })).toThrow("Pick the activity to edit.");
+    expect(() => parsePastureActivityEditInput({ id: 1, activity_date: "", activity_type: "fencing" })).toThrow("Activity date is required.");
+    expect(() => parsePastureActivityEditInput({ id: 1, activity_date: "2026-09-01", activity_type: "nope" })).toThrow("Pick an activity type.");
+    expect(() => parsePastureActivityEditInput({ id: 1, activity_date: "2026-09-01", activity_type: "fencing", cost_cents: -1 })).toThrow("Cost can't be negative.");
+  });
+
+  test("cross-operation ids are REJECTED: update errors, delete can never touch another ranch's row", async () => {
+    // Ranch B records an activity with a linked expense.
+    const bCreated = await savePastureActivityCore(db, opBId, {
+      client_request_id: `cross-op-activity-own-${Date.now()}`,
+      pasture_id: pastureB1,
+      activity_date: inMonth(),
+      activity_type: "fencing",
+      cost_cents: 42000,
+      notes: "B's own work",
+      record_expense: true,
+    });
+    expect(bCreated.ok).toBe(true);
+    if (!bCreated.ok) throw new Error(bCreated.error);
+
+    // A UPDATE on B's id → refused, and B's row is untouched.
+    const badUpdate = await updatePastureActivityCore(db, opAId, {
+      id: bCreated.id,
+      activity_date: "2026-09-09",
+      activity_type: "mowing",
+      cost_cents: 1,
+      notes: "sneaky",
+      record_expense: true,
+    });
+    expect(badUpdate.ok).toBe(false);
+    if (!badUpdate.ok) expect(badUpdate.error).toContain("no longer exists");
+
+    // A DELETE on B's id → the scoped query finds nothing of A's: the safe
+    // already-removed outcome, and B's row + expense still exist untouched.
+    const badDelete = await deletePastureActivityCore(db, opAId, bCreated.id);
+    expect(badDelete.ok).toBe(true);
+    if (!badDelete.ok) throw new Error(badDelete.error);
+    expect(badDelete.alreadyDeleted).toBe(true);
+    expect((await db`SELECT id FROM pasture_activities WHERE id=${bCreated.id}`).length).toBe(1);
+    expect((await db`SELECT id, cost_cents FROM pasture_activities WHERE id=${bCreated.id}`).length).toBe(1);
+    const bExp = await db<{ id: number }[]>`
+      SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${bCreated.id} AND operation_id=${opBId}`;
+    expect(bExp.length).toBe(1);
+
+    await db`DELETE FROM expenses WHERE id=${bExp[0].id}`;
+    await db`DELETE FROM pasture_activities WHERE id=${bCreated.id}`;
   });
 });
 

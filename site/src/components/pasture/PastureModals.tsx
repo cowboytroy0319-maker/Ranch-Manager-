@@ -11,6 +11,7 @@
 // ============================================================================
 import { useState } from "react";
 import { savePasture, savePastureActivity, moveLivestock, type PastureInput } from "~/server/pasture";
+import { newClientRequestId } from "~/components/feed/restockUI";
 import { useDraftPersistence, draftKey } from "~/components/drafts";
 import {
   ACTIVITY_TYPES,
@@ -347,6 +348,9 @@ export function ActivityFormModal({
   const [recordExpense, setRecordExpense] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // ONE idempotency key per form-open. Never regenerated on retry — the
+  // server dedupes on it, so a double-tap can't record the activity twice.
+  const [clientRequestId] = useState(() => newClientRequestId());
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -355,6 +359,7 @@ export function ActivityFormModal({
     const cents = costDollars.trim() === "" ? null : Math.round(Number(costDollars) * 100);
     const res = await savePastureActivity({
       data: {
+        client_request_id: clientRequestId,
         pasture_id: pasture.id,
         activity_date: activityDate,
         activity_type: activityType,

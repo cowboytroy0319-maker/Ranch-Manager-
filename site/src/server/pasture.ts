@@ -250,9 +250,19 @@ export async function savePastureCore(
 // Write: pasture activity — record work on a paddock; when the operator asks
 // (record_expense, default true) AND cost > 0, ALSO create ONE linked
 // land/pasture expense (unique index backs exactly-once). One transaction.
+// IDEMPOTENT (mirrors restockItem): the same client_request_id for the same
+// operation returns the original row creating NOTHING — a retry, double-tap,
+// or flaky-network re-send can never double-record work or money. The DB
+// unique index on client_request_id is the backstop if two requests race.
 // ---------------------------------------------------------------------------
 
+/** The honest outcome for a duplicate create (same client_request_id): the
+ *  activity — and its linked expense, if any — are unchanged. */
+export const PASTURE_ACTIVITY_DUPLICATE_MESSAGE =
+  "Already recorded — activity and expense unchanged.";
+
 export type PastureActivityInput = {
+  client_request_id: string;
   pasture_id: number;
   activity_date: string;
   activity_type: ActivityType;
@@ -263,6 +273,9 @@ export type PastureActivityInput = {
 
 export function parsePastureActivityInput(raw: unknown): PastureActivityInput {
   const d = (raw ?? {}) as Record<string, unknown>;
+  const client_request_id = str(d.client_request_id);
+  if (!client_request_id) throw new Error("A request id is required — try again.");
+  if (client_request_id.length > 200) throw new Error("Request id is too long.");
   const pasture_id = optionalInt(d.pasture_id);
   if (!pasture_id || pasture_id <= 0) throw new Error("Pick the pasture this activity is for.");
   const activity_date = isoDate(d.activity_date);
@@ -275,6 +288,7 @@ export function parsePastureActivityInput(raw: unknown): PastureActivityInput {
     cost_cents = null;
   }
   return {
+    client_request_id,
     pasture_id,
     activity_date,
     activity_type,
@@ -287,7 +301,7 @@ export function parsePastureActivityInput(raw: unknown): PastureActivityInput {
 export const savePastureActivity = createServerFn({ method: "POST" })
   .validator(parsePastureActivityInput)
   .handler(async ({ data }): Promise<
-    { ok: true; id: number; expense_created: boolean } | { ok: false; error: string }
+    { ok: true; id: number; expense_created: boolean; duplicate: boolean } | { ok: false; error: string }
   > => {
     if (!isDatabaseConfigured()) {
       console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
@@ -298,25 +312,41 @@ export const savePastureActivity = createServerFn({ method: "POST" })
       return await savePastureActivityCore(sql(), auth.operationId, data);
     } catch (err) {
       console.error("savePastureActivity failed:", err);
-      return { ok: false, error: "We couldn't record that activity right now. Please try again." };
+      return { ok: false, error: err instanceof Error ? err.message : "We couldn't record that activity right now. Please try again." };
     }
   });
 
 /** Injectable pasture-activity core — the exact transaction the handler runs.
- *  The pasture is validated scoped to the operation; the linked expense is
- *  created only when record_expense AND cost > 0. */
+ *  Idempotent: the FIRST thing inside the transaction is the duplicate check
+ *  (same client_request_id + operation) — a hit returns the original row and
+ *  creates nothing. Otherwise the pasture is validated scoped to the operation,
+ *  the activity is inserted, and the linked expense is created only when
+ *  record_expense AND cost > 0. */
 export async function savePastureActivityCore(
   db: ReturnType<typeof sql>,
   operationId: number,
   a: PastureActivityInput
-): Promise<{ ok: true; id: number; expense_created: boolean } | { ok: false; error: string }> {
+): Promise<{ ok: true; id: number; expense_created: boolean; duplicate: boolean } | { ok: false; error: string }> {
   return await db.begin(async (tx) => {
+    // Idempotency first: the SAME client_request_id for this operation returns
+    // the original activity WITHOUT creating anything (no second row, no
+    // second expense — the caller gets the plain already-recorded outcome).
+    const prior = await tx<[{ id: number; cost_cents: number | null }]>`
+      SELECT id, cost_cents FROM pasture_activities
+      WHERE client_request_id = ${a.client_request_id} AND operation_id = ${operationId}`;
+    if (prior.length > 0) {
+      const linked = await tx<[{ id: number }]>`
+        SELECT id FROM expenses
+        WHERE source_type = 'pasture_activity' AND source_id = ${prior[0].id}
+          AND operation_id = ${operationId}`;
+      return { ok: true, id: prior[0].id, expense_created: linked.length > 0, duplicate: true };
+    }
     const [pasture] = await tx<[{ name: string }]>`
       SELECT name FROM pastures WHERE id=${a.pasture_id} AND operation_id=${operationId} FOR UPDATE`;
     if (!pasture) return { ok: false, error: "That pasture no longer exists in this ranch." };
     const [row] = await tx<[{ id: number }]>`
-      INSERT INTO pasture_activities (operation_id, pasture_id, activity_date, activity_type, cost_cents, notes)
-      VALUES (${operationId}, ${a.pasture_id}, ${a.activity_date}, ${a.activity_type}, ${a.cost_cents}, ${a.notes})
+      INSERT INTO pasture_activities (operation_id, pasture_id, activity_date, activity_type, cost_cents, notes, client_request_id)
+      VALUES (${operationId}, ${a.pasture_id}, ${a.activity_date}, ${a.activity_type}, ${a.cost_cents}, ${a.notes}, ${a.client_request_id})
       RETURNING id`;
     const wantsExpense = a.record_expense && a.cost_cents !== null && a.cost_cents > 0;
     if (wantsExpense) {
@@ -331,7 +361,170 @@ export async function savePastureActivityCore(
         pasture_id: a.pasture_id,
       });
     }
-    return { ok: true, id: row.id, expense_created: wantsExpense };
+    return { ok: true, id: row.id, expense_created: wantsExpense, duplicate: false };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Corrections (edit / delete) — operation-scoped, transactional, and safe to
+// retry. The edit is absolute-value-set (running the same edit twice lands in
+// the same place); the delete is safe on repeat. The linked expense
+// (source_type 'pasture_activity') always follows the activity so the ledger
+// and the work log tell ONE consistent story — never a partial state.
+// ---------------------------------------------------------------------------
+
+export type PastureActivityEditInput = {
+  id: number;
+  activity_date: string;
+  activity_type: ActivityType;
+  cost_cents: number | null;
+  notes: string | null;
+  record_expense: boolean;
+};
+
+export function parsePastureActivityEditInput(raw: unknown): PastureActivityEditInput {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const id = optionalInt(d.id);
+  if (!id || id <= 0) throw new Error("Pick the activity to edit.");
+  const activity_date = isoDate(d.activity_date);
+  if (!activity_date) throw new Error("Activity date is required.");
+  const activity_type = oneOf(d.activity_type, ACTIVITY_TYPES);
+  if (!activity_type) throw new Error("Pick an activity type.");
+  let cost_cents = optionalInt(d.cost_cents);
+  if (cost_cents !== null && cost_cents < 0) throw new Error("Cost can't be negative.");
+  // A blank/empty/"0" cost means "no expense" — same rule as create.
+  if (d.cost_cents === "" || d.cost_cents === null || d.cost_cents === undefined || Number(d.cost_cents) === 0) {
+    cost_cents = null;
+  }
+  return {
+    id,
+    activity_date,
+    activity_type,
+    cost_cents,
+    notes: str(d.notes),
+    record_expense: d.record_expense !== false,
+  };
+}
+
+export const updatePastureActivity = createServerFn({ method: "POST" })
+  .validator(parsePastureActivityEditInput)
+  .handler(async ({ data }): Promise<
+    { ok: true; id: number; expense_linked: boolean } | { ok: false; error: string }
+  > => {
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
+    try {
+      const auth = await requireAuth();
+      return await updatePastureActivityCore(sql(), auth.operationId, data);
+    } catch (err) {
+      console.error("updatePastureActivity failed:", err);
+      return { ok: false, error: err instanceof Error ? err.message : "We couldn't update that activity right now. Please try again." };
+    }
+  });
+
+/** Injectable edit core — one transaction: update the activity row, then
+ *  upsert (cost > 0 AND record_expense) or remove (blank/0 cost, or the box
+ *  unchecked) the linked expense. Values are absolute, so a retried edit is
+ *  naturally idempotent; the unique index on (source_type, source_id) keeps
+ *  exactly one linked expense. */
+export async function updatePastureActivityCore(
+  db: ReturnType<typeof sql>,
+  operationId: number,
+  e: PastureActivityEditInput
+): Promise<{ ok: true; id: number; expense_linked: boolean } | { ok: false; error: string }> {
+  return await db.begin(async (tx) => {
+    // Scoped to THIS operation — another ranch's activity id is invisible here.
+    const [activity] = await tx<[{ pasture_id: number }]>`
+      SELECT pasture_id FROM pasture_activities
+      WHERE id=${e.id} AND operation_id=${operationId} FOR UPDATE`;
+    if (!activity) return { ok: false, error: "That activity no longer exists in this ranch." };
+
+    // Same "blank/0 means no cost" rule as create: store NULL, never 0.
+    const costCents = e.cost_cents === 0 ? null : e.cost_cents;
+
+    await tx`
+      UPDATE pasture_activities SET activity_date=${e.activity_date}, activity_type=${e.activity_type},
+        cost_cents=${costCents}, notes=${e.notes}
+      WHERE id=${e.id} AND operation_id=${operationId}`;
+
+    const linked = await tx<[{ id: number }]>`
+      SELECT id FROM expenses
+      WHERE source_type='pasture_activity' AND source_id=${e.id} AND operation_id=${operationId}`;
+    const wantsExpense = e.record_expense && costCents !== null && costCents > 0;
+    if (wantsExpense) {
+      if (linked.length > 0) {
+        // Amount, date, pasture, and notes follow the edited activity. (A
+        // pasture activity has no vendor field, so the linked expense keeps
+        // vendor NULL — same as create.)
+        await tx`
+          UPDATE expenses SET expense_date=${e.activity_date}, amount_cents=${costCents as number},
+            pasture_id=${activity.pasture_id}, vendor=null,
+            notes=${`Pasture activity — ${e.activity_type}${e.notes ? `: ${e.notes}` : ""}`}
+          WHERE id=${linked[0].id} AND operation_id=${operationId}`;
+      } else {
+        await insertLinkedExpense(tx, operationId, {
+          category: "land_pasture",
+          expense_date: e.activity_date,
+          amount_cents: costCents as number,
+          vendor: null,
+          notes: `Pasture activity — ${e.activity_type}${e.notes ? `: ${e.notes}` : ""}`,
+          source_type: "pasture_activity",
+          source_id: e.id,
+          pasture_id: activity.pasture_id,
+        });
+      }
+    } else if (linked.length > 0) {
+      await tx`DELETE FROM expenses WHERE id=${linked[0].id} AND operation_id=${operationId}`;
+    }
+    return { ok: true, id: e.id, expense_linked: wantsExpense };
+  });
+}
+
+export const deletePastureActivity = createServerFn({ method: "POST" })
+  .validator((raw: unknown) => {
+    const id = Number((raw ?? null) as unknown);
+    if (!Number.isInteger(id) || id <= 0) throw new Error("Pick the activity to delete.");
+    return id;
+  })
+  .handler(async ({ data: id }): Promise<
+    { ok: true; alreadyDeleted: boolean; linked_expense_removed: boolean } | { ok: false; error: string }
+  > => {
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
+    try {
+      const auth = await requireAuth();
+      return await deletePastureActivityCore(sql(), auth.operationId, id);
+    } catch (err) {
+      console.error("deletePastureActivity failed:", err);
+      return { ok: false, error: err instanceof Error ? err.message : "We couldn't delete that activity right now. Please try again." };
+    }
+  });
+
+/** Injectable delete core — removes the activity AND its linked expense in ONE
+ *  transaction, scoped to this operation. Safe on repeat: a second call (or an
+ *  id that was never this operation's) finds nothing under this operation and
+ *  reports the plain already-removed outcome instead of a raw error. */
+export async function deletePastureActivityCore(
+  db: ReturnType<typeof sql>,
+  operationId: number,
+  id: number
+): Promise<{ ok: true; alreadyDeleted: boolean; linked_expense_removed: boolean } | { ok: false; error: string }> {
+  return await db.begin(async (tx) => {
+    const [activity] = await tx<[{ id: number }]>`
+      SELECT id FROM pasture_activities WHERE id=${id} AND operation_id=${operationId} FOR UPDATE`;
+    if (!activity) return { ok: true, alreadyDeleted: true, linked_expense_removed: false };
+    const linked = await tx<[{ id: number }]>`
+      SELECT id FROM expenses
+      WHERE source_type='pasture_activity' AND source_id=${id} AND operation_id=${operationId}`;
+    if (linked.length > 0) {
+      await tx`DELETE FROM expenses WHERE id=${linked[0].id} AND operation_id=${operationId}`;
+    }
+    await tx`DELETE FROM pasture_activities WHERE id=${id} AND operation_id=${operationId}`;
+    return { ok: true, alreadyDeleted: false, linked_expense_removed: linked.length > 0 };
   });
 }
 
