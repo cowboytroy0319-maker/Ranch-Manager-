@@ -224,7 +224,10 @@ function parseUsageInput(raw: unknown): UsageInput {
 export const saveHay = createServerFn({ method: "POST" })
   .validator(parseHayInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -259,7 +262,10 @@ export const saveHay = createServerFn({ method: "POST" })
 export const saveFeedItem = createServerFn({ method: "POST" })
   .validator(parseFeedItemInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -292,7 +298,10 @@ export const saveFeedItem = createServerFn({ method: "POST" })
 export const logUsage = createServerFn({ method: "POST" })
   .validator(parseUsageInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -398,7 +407,10 @@ export const restockItem = createServerFn({ method: "POST" })
   .handler(async ({ data: r }): Promise<
     { ok: true; id: number; expense_created: boolean; duplicate: boolean } | { ok: false; error: string }
   > => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       return await restockItemCore(sql(), auth.operationId, r);
@@ -519,10 +531,20 @@ export function parseRestockEditInput(raw: unknown): RestockEditInput {
   };
 }
 
+/** Owner rule (PR #4 review): never silently clamp inventory to zero. When an
+ *  edit or delete would push the on-hand count below zero, the whole correction
+ *  is refused — some units have already been used, so the book value is right
+ *  and the "correction" would be the error. */
+export const INVENTORY_BELOW_ZERO_ERROR =
+  "This correction would take the stock below zero — some units have already been used. Nothing was changed.";
+
 export const updateRestock = createServerFn({ method: "POST" })
   .validator(parseRestockEditInput)
   .handler(async ({ data: r }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       return await updateRestockCore(sql(), auth.operationId, r);
@@ -548,16 +570,36 @@ export async function updateRestockCore(
     const oldQty = Number(log.quantity);
     const delta = r.quantity - oldQty;
 
+    // Inventory safety (owner rule): read the current level under a row lock and
+    // decide BEFORE any write, so a blocked edit applies nothing at all — no
+    // partial inventory, restock_log, or expense changes.
+    let current: number;
+    if (log.item_kind === "hay") {
+      const [inv] = await tx<[{ quantity: string }]>`SELECT quantity FROM hay_inventory
+        WHERE id=${itemId} AND operation_id=${operationId} FOR UPDATE`;
+      if (!inv) return { ok: false, error: "That restock's inventory item was deleted, so it can't be edited." };
+      current = Number(inv.quantity);
+    } else {
+      const [inv] = await tx<[{ quantity: string }]>`SELECT quantity FROM feed_inventory
+        WHERE id=${itemId} AND operation_id=${operationId} FOR UPDATE`;
+      if (!inv) return { ok: false, error: "That restock's inventory item was deleted, so it can't be edited." };
+      current = Number(inv.quantity);
+    }
+    if (current + delta < 0) {
+      return { ok: false, error: INVENTORY_BELOW_ZERO_ERROR };
+    }
+
     await tx`
       UPDATE restock_log SET quantity=${r.quantity}, unit=${r.unit}, restock_date=${r.restock_date},
         total_cost_cents=${r.total_cost_cents}, vendor=${r.vendor}, notes=${r.notes}
       WHERE id=${r.id} AND operation_id=${operationId}`;
 
+    // Exact arithmetic, no clamp — the pre-check above guarantees the new level stays >= 0.
     if (log.item_kind === "hay") {
-      await tx`UPDATE hay_inventory SET quantity = GREATEST(0, quantity + ${delta}), updated_at = now()
+      await tx`UPDATE hay_inventory SET quantity = quantity + ${delta}, updated_at = now()
         WHERE id=${itemId} AND operation_id=${operationId}`;
     } else {
-      await tx`UPDATE feed_inventory SET quantity = GREATEST(0, quantity + ${delta}), updated_at = now()
+      await tx`UPDATE feed_inventory SET quantity = quantity + ${delta}, updated_at = now()
         WHERE id=${itemId} AND operation_id=${operationId}`;
     }
 
@@ -602,7 +644,10 @@ export const deleteRestock = createServerFn({ method: "POST" })
     return id;
   })
   .handler(async ({ data: id }): Promise<{ ok: true; linked_expense_removed: boolean } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       return await deleteRestockCore(sql(), auth.operationId, id);
@@ -625,14 +670,43 @@ export async function deleteRestockCore(
     const itemId = log.item_kind === "hay" ? log.hay_item_id : log.feed_item_id;
     const linked = await tx<[{ id: number }]>`
       SELECT id FROM expenses WHERE source_type='restock' AND source_id=${id} AND operation_id=${operationId}`;
-    // Reverse inventory (floor at 0 — the item may have been consumed).
+    // DESIGN NOTE — audited inventory adjustments (owner-requested, NOT built
+    // here): blocking a reversal below zero means stock that was already fed out
+    // can't be un-recorded by deleting a restock. A future inventory-adjustment
+    // record would need: the adjustment date, a signed delta (units added or
+    // removed), a required reason (e.g. shrink, miscount, spoilage), and the
+    // operation scope — written as its own audited row (who/when/why, plus the
+    // resulting level) so the ledger stays explainable. No table or UI exists
+    // yet; until it does, corrections that would push stock below zero stay
+    // blocked with a plain-language message instead of being clamped.
     if (itemId) {
+      let missing = false;
+      let current = 0;
       if (log.item_kind === "hay") {
-        await tx`UPDATE hay_inventory SET quantity = GREATEST(0, quantity - ${Number(log.quantity)}), updated_at = now()
-          WHERE id=${itemId} AND operation_id=${operationId}`;
+        const [inv] = await tx<[{ quantity: string }]>`SELECT quantity FROM hay_inventory
+          WHERE id=${itemId} AND operation_id=${operationId} FOR UPDATE`;
+        if (!inv) missing = true;
+        else current = Number(inv.quantity);
       } else {
-        await tx`UPDATE feed_inventory SET quantity = GREATEST(0, quantity - ${Number(log.quantity)}), updated_at = now()
-          WHERE id=${itemId} AND operation_id=${operationId}`;
+        const [inv] = await tx<[{ quantity: string }]>`SELECT quantity FROM feed_inventory
+          WHERE id=${itemId} AND operation_id=${operationId} FOR UPDATE`;
+        if (!inv) missing = true;
+        else current = Number(inv.quantity);
+      }
+      if (!missing) {
+        // Owner rule: never silently clamp. Decide BEFORE any write, so a blocked
+        // delete applies nothing — inventory, expense, and the log row all stay put.
+        if (current - Number(log.quantity) < 0) {
+          return { ok: false, error: INVENTORY_BELOW_ZERO_ERROR };
+        }
+        // Exact arithmetic, no clamp — the check above guarantees the new level stays >= 0.
+        if (log.item_kind === "hay") {
+          await tx`UPDATE hay_inventory SET quantity = quantity - ${Number(log.quantity)}, updated_at = now()
+            WHERE id=${itemId} AND operation_id=${operationId}`;
+        } else {
+          await tx`UPDATE feed_inventory SET quantity = quantity - ${Number(log.quantity)}, updated_at = now()
+            WHERE id=${itemId} AND operation_id=${operationId}`;
+        }
       }
     }
     if (linked.length > 0) {
