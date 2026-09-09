@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS restock_log (
 );
 CREATE INDEX IF NOT EXISTS restock_log_operation_id_idx ON restock_log (operation_id);
 
--- ---- pasture_activities: work/cost events on a pasture (expense-linked) ----
+-- ---- pasture_activities: work/cost events on a pasture (expense-linked;
+--      idempotent via client_request_id, same pattern as restock_log) ----
 CREATE TABLE IF NOT EXISTS pasture_activities (
   id             integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   operation_id   integer NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
@@ -82,6 +83,7 @@ CREATE TABLE IF NOT EXISTS pasture_activities (
                   'inspection', 'other')),
   cost_cents     integer CHECK (cost_cents IS NULL OR cost_cents >= 0),
   notes          text,
+  client_request_id text UNIQUE,
   created_at     timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS pasture_activities_operation_id_idx ON pasture_activities (operation_id);
