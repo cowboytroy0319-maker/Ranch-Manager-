@@ -76,7 +76,8 @@ describe("restock client_request_id (idempotency on double-submit)", () => {
   test("generates unique, non-empty keys", () => {
     const a = newClientRequestId();
     const b = newClientRequestId();
-    expect(a.length).toBeGreaterThan(8);
+    // (boolean form: this repo's bun-types build doesn't ship toBeGreaterThan)
+    expect(a.length > 8).toBe(true);
     expect(a).not.toBe(b);
   });
   test("the SAME form-open key is reused across retries — buildRestockSubmit never regenerates it", () => {
