@@ -53,6 +53,7 @@ const obsTone: Record<string, "green" | "amber" | "red" | "blue" | "stone"> = {
 };
 
 const speciesEmoji: Record<Species, string> = { cattle: "🐄", horse: "🐎", goat: "🐐", sheep: "🐑" };
+const capFirst = (s: string) => s.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 
 // ---------------------------------------------------------------------------
 // Regional forage & grazing intelligence (the differentiator) — static content
@@ -632,7 +633,79 @@ function PasturePage() {
             + Add pasture
           </button>
         </div>
-        <div className="overflow-x-auto">
+        {/* Phone-safe card list (375/390px): every card is self-contained —
+            name, key facts, and a full-width View/manage tap target. No
+            horizontal swipe anywhere; the desktop table returns at md+. */}
+        <ul className="mt-3 space-y-3 md:hidden">
+          {rows.map((r) => {
+            const grazing = r.currentStatus === "grazing";
+            return (
+              <li key={r.pasture.id} className="rounded-xl border border-stone-200 bg-white p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDetailId(r.pasture.id)}
+                    className="min-h-11 text-left font-semibold text-stone-900 transition hover:text-green-800"
+                    title={`Open ${r.pasture.name} detail`}
+                  >
+                    🌾 {r.pasture.name}
+                  </button>
+                  <Badge tone={grazing ? "green" : "stone"}>
+                    {grazing ? `Grazing · ${r.runDays}d` : `Rest · ${r.runDays}d`}
+                  </Badge>
+                </div>
+                <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-stone-600">
+                  <div>
+                    <dt className="inline font-semibold text-stone-500">Acres: </dt>
+                    <dd className="inline font-semibold text-stone-800">
+                      {r.pasture.size_acres != null ? Number(r.pasture.size_acres).toLocaleString() : "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="inline font-semibold text-stone-500">Group: </dt>
+                    <dd className="inline font-semibold text-stone-800">
+                      {r.assignment?.name
+                        ? `${r.assignment.species ? `${speciesEmoji[r.assignment.species]} ` : ""}${r.assignment.name}`
+                        : "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="inline font-semibold text-stone-500">Condition: </dt>
+                    <dd className="inline font-semibold text-stone-800">{capFirst(r.pasture.condition)}</dd>
+                  </div>
+                  <div>
+                    <dt className="inline font-semibold text-stone-500">Water: </dt>
+                    <dd className="inline font-semibold text-stone-800">{capFirst(r.pasture.water_status)}</dd>
+                  </div>
+                  <div className="col-span-2">
+                    <dt className="inline font-semibold text-stone-500">21 days: </dt>
+                    <dd className="inline">
+                      <span className="font-semibold text-stone-800">{r.grazed21}d</span> grazed ·{" "}
+                      <span className="font-semibold text-stone-800">{r.rested21}d</span> rest
+                    </dd>
+                  </div>
+                </dl>
+                {r.pasture.notes && <p className="mt-1 text-xs text-stone-400">{r.pasture.notes}</p>}
+                <button
+                  type="button"
+                  onClick={() => setDetailId(r.pasture.id)}
+                  className="mt-2 flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-200 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-green-700 hover:text-green-800"
+                >
+                  View / manage
+                </button>
+              </li>
+            );
+          })}
+          {rows.length === 0 && (
+            <li className="rounded-xl border border-dashed border-stone-300 p-6 text-center text-sm text-stone-500">
+              No paddocks on record yet — hit “+ Add pasture” above to map your first one.
+              <TemplatesLink className="mt-3 justify-center" />
+            </li>
+          )}
+        </ul>
+
+        {/* Desktop board — full table from md up (no horizontal scroll there). */}
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-4xl text-left text-sm">
             <thead>
               <tr className="border-b border-stone-200 text-xs uppercase tracking-wide text-stone-500">

@@ -44,26 +44,30 @@ export function expenseFilterFromSearch(search: Record<string, unknown>): Expens
 }
 
 /** What a list row shows for its origin. Linked expenses (source_type set)
- *  get an indicator plus the closest practical deep link; manual rows say so.
- *  No overclaiming: a restock has no dedicated detail screen this release, so
- *  its link goes to the Hay & Feed module (labeled as such), while a pasture
- *  activity deep-links to its pasture's detail view when the pasture id is on
- *  the row. */
+ *  get a source label plus a source-management action link to the closest
+ *  practical screen; manual rows say so. The expense itself has no Delete and
+ *  no Edit on linked rows — it is corrected at its source. No overclaiming: a
+ *  restock has no dedicated detail screen this release, so its link goes to
+ *  the Hay & Feed module (labeled as such), while a pasture activity links to
+ *  its pasture's detail view when the pasture id is on the row (module page
+ *  otherwise — the link always works, the label says where it lands). */
 export function expenseSourceIndicator(
   row: Pick<ExpenseRow, "source_type" | "source_id" | "pasture_id">
-): { label: string; to: string; hint: string } | null {
+): { label: string; to: string; actionLabel: string; hint: string } | null {
   if (row.source_type === "restock") {
     return {
       label: "↳ hay/feed restock",
       to: "/feed",
-      hint: "Created from a restock — manage it in Hay & Feed",
+      actionLabel: "Open in Hay & Feed",
+      hint: "Created from a restock — corrected there, not here",
     };
   }
   if (row.source_type === "pasture_activity") {
     return {
       label: "↳ pasture activity",
       to: row.pasture_id != null ? `/pasture?open=${row.pasture_id}` : "/pasture",
-      hint: "Created from a pasture activity — view it on the pasture",
+      actionLabel: "Open in Pasture",
+      hint: "Created from a pasture activity — corrected there, not here",
     };
   }
   return null;

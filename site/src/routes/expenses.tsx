@@ -238,25 +238,32 @@ function ExpensesPage() {
                         </p>
                         {indicator ? (
                           <p className="mt-1 text-xs">
-                            <Link to={indicator.to} className="font-semibold text-green-700 underline underline-offset-2" title={indicator.hint}>
-                              {indicator.label}
+                            <span className="font-semibold text-stone-600">{indicator.label}</span>
+                            <span className="text-stone-400"> — {indicator.hint}. </span>
+                            <Link
+                              to={indicator.to}
+                              className="inline-flex min-h-11 items-center font-semibold text-green-700 underline underline-offset-2"
+                              title={indicator.hint}
+                            >
+                              {indicator.actionLabel} →
                             </Link>
-                            <span className="text-stone-400"> — {indicator.hint}</span>
                           </p>
                         ) : (
                           <p className="mt-1 text-xs text-stone-400">{MANUAL_SOURCE_LABEL} entry</p>
                         )}
                       </div>
-                      <div className="flex shrink-0 flex-col gap-1.5">
-                        {!r.linked && (
+                      {/* Linked rows have NO Delete (and no Edit): the expense
+                          is owned by its source record — correct it there. */}
+                      {!r.linked && (
+                        <div className="flex shrink-0 flex-col gap-1.5">
                           <button onClick={() => { setEditing(r); setFormOpen(true); }} className={rowBtnCls}>
                             Edit
                           </button>
-                        )}
-                        <button onClick={() => { setDeleting(r); setDeleteError(null); }} className={rowBtnCls}>
-                          Delete
-                        </button>
-                      </div>
+                          <button onClick={() => { setDeleting(r); setDeleteError(null); }} className={rowBtnCls}>
+                            Delete
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </li>
                 );

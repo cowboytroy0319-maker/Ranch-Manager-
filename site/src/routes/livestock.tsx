@@ -140,20 +140,10 @@ function LivestockPage() {
             title="🚜 Database not configured"
             sub="Livestock records persist to Postgres — no connection string is set in this environment."
           />
-          <ol className="list-inside list-decimal space-y-1.5 text-sm text-stone-700">
-            <li>
-              Set <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">DATABASE_URL</code> to a Postgres
-              connection string.
-            </li>
-            <li>
-              Run <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">bun run db:migrate</code> to create the
-              livestock tables.
-            </li>
-            <li>
-              Run <code className="rounded bg-stone-200 px-1.5 py-0.5 font-mono text-xs">bun run db:seed</code> to load the demo
-              operation (12 cattle, 4 horses, 8 goats, 6 sheep + health events).
-            </li>
-          </ol>
+          <p className="text-sm text-stone-700">
+            Livestock records persist to your operation&apos;s own database. This environment isn&apos;t connected to one yet —
+            once it is, your herd list, health history, and groups appear here automatically.
+          </p>
           <p className="mt-4 text-sm text-stone-500">
             Meanwhile, the <Link to="/demo" className="font-semibold text-green-700 hover:text-green-900">interactive demo</Link>{" "}
             shows the same workflows with sample data.
@@ -377,7 +367,7 @@ function LivestockPage() {
                   <td colSpan={8} className="py-8 text-center text-sm text-stone-500">
                     {data.animals.length === 0 ? (
                       <>
-                        No animals on record yet — add your first, or run `bun run db:seed` to load the demo operation.
+                        No animals on record yet — tap “＋ Add animal” to record your first.
                         <TemplatesLink className="mt-3 justify-center" />
                       </>
                     ) : (

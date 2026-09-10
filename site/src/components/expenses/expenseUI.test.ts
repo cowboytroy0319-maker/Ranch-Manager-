@@ -55,16 +55,19 @@ describe("expense linked-source indicators", () => {
     const ind = expenseSourceIndicator({ source_type: "restock", source_id: 7, pasture_id: null });
     expect(ind?.label).toBe("↳ hay/feed restock");
     expect(ind?.to).toBe("/feed");
-    expect(ind?.hint).toContain("Hay & Feed");
+    expect(ind?.actionLabel).toBe("Open in Hay & Feed");
+    expect(ind?.hint).toContain("corrected there");
   });
   test("pasture-activity rows deep-link to the pasture detail when the id is known", () => {
     const ind = expenseSourceIndicator({ source_type: "pasture_activity", source_id: 3, pasture_id: 12 });
     expect(ind?.label).toBe("↳ pasture activity");
     expect(ind?.to).toBe("/pasture?open=12");
+    expect(ind?.actionLabel).toBe("Open in Pasture");
   });
   test("pasture-activity rows fall back to the module when pasture_id is null", () => {
     const ind = expenseSourceIndicator({ source_type: "pasture_activity", source_id: 3, pasture_id: null });
     expect(ind?.to).toBe("/pasture");
+    expect(ind?.actionLabel).toBe("Open in Pasture");
   });
   test("manual rows have no indicator — they say 'manual' instead", () => {
     expect(expenseSourceIndicator({ source_type: null, source_id: null, pasture_id: null })).toBeNull();
