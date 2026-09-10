@@ -250,10 +250,13 @@ export async function savePastureCore(
 // Write: pasture activity — record work on a paddock; when the operator asks
 // (record_expense, default true) AND cost > 0, ALSO create ONE linked
 // land/pasture expense (unique index backs exactly-once). One transaction.
-// IDEMPOTENT (mirrors restockItem): the same client_request_id for the same
-// operation returns the original row creating NOTHING — a retry, double-tap,
-// or flaky-network re-send can never double-record work or money. The DB
-// unique index on client_request_id is the backstop if two requests race.
+// IDEMPOTENT PER OPERATION (mirrors restockItem): the same client_request_id
+// for the same operation returns the original row creating NOTHING — a retry,
+// double-tap, or flaky-network re-send can never double-record work or money.
+// Idempotency is per operation (ranch), never global: two different ranches
+// may reuse the same client_request_id. The DB backstop for two racing
+// requests from the SAME ranch is the named composite unique constraint
+// uq_pasture_activities_operation_request on (operation_id, client_request_id).
 // ---------------------------------------------------------------------------
 
 /** The honest outcome for a duplicate create (same client_request_id): the

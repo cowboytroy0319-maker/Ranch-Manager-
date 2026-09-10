@@ -21,6 +21,10 @@
 //   8. templates: expense CSV lists the 12 new categories (buildTemplateCsv)
 //   9. inventory safety: an edit/delete that would push stock below zero is
 //      blocked with a plain-language error — nothing applies partially
+//   10. idempotency is PER OPERATION (ranch), never global: two operations
+//      may reuse the SAME client_request_id and each gets its own rows (the
+//      named composite unique constraints), while a same-key retry inside one
+//      operation duplicates nothing
 //
 // The createServerFn handlers run only inside a compiled app, so this suite
 // exercises the injectable *Core functions (the exact SQL the handlers run)
@@ -1174,6 +1178,304 @@ describe("pasture activity idempotency + correction path", () => {
 
     await db`DELETE FROM expenses WHERE id=${bExp[0].id}`;
     await db`DELETE FROM pasture_activities WHERE id=${bCreated.id}`;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6c. Idempotency is PER OPERATION (ranch) — the DB composite unique
+//     constraints uq_restock_log_operation_request and
+//     uq_pasture_activities_operation_request, each on
+//     (operation_id, client_request_id), match the app's per-operation
+//     dedupe lookups: the same client_request_id may be reused by two
+//     different ranches with NO collision, while a same-key retry inside one
+//     ranch can never duplicate inventory / activity / expense. (Migration
+//     0018 previously declared a GLOBAL `client_request_id UNIQUE`, which
+//     wrongly rejected one ranch's retry when another ranch generated the
+//     same UUID.)
+// ---------------------------------------------------------------------------
+
+describe("client_request_id uniqueness is PER OPERATION (ranch), not global", () => {
+  test("Ranches A and B use the SAME client_request_id — each gets its OWN restock and its OWN activity", async () => {
+    const shared = `shared-req-${Date.now()}`;
+
+    // A restocks its own hay stack; B restocks its own — identical request id.
+    const aRestock = await restockItemCore(db, opAId, {
+      client_request_id: shared,
+      item_kind: "hay",
+      item_id: hayAId,
+      quantity: 5,
+      unit: "bales",
+      restock_date: inMonth(),
+      total_cost_cents: 25000,
+      vendor: "Shared Key Co",
+      notes: null,
+    });
+    expect(aRestock.ok).toBe(true);
+    if (!aRestock.ok) throw new Error(aRestock.error);
+    expect(aRestock.duplicate).toBe(false);
+
+    const bRestock = await restockItemCore(db, opBId, {
+      client_request_id: shared, // identical key, DIFFERENT ranch — must not collide
+      item_kind: "hay",
+      item_id: hayBId,
+      quantity: 4,
+      unit: "bales",
+      restock_date: inMonth(),
+      total_cost_cents: 20000,
+      vendor: "Shared Key Co",
+      notes: null,
+    });
+    expect(bRestock.ok).toBe(true);
+    if (!bRestock.ok) throw new Error(bRestock.error);
+    expect(bRestock.duplicate).toBe(false);
+    expect(bRestock.id).not.toBe(aRestock.id);
+
+    // Two distinct restock rows — one per operation, same client_request_id.
+    const restockRows = await db<{ id: number; operation_id: number }[]>`
+      SELECT id, operation_id FROM restock_log WHERE client_request_id=${shared} ORDER BY id`;
+    expect(restockRows.length).toBe(2);
+    expect(restockRows.map((r) => r.operation_id)).toContain(opAId);
+    expect(restockRows.map((r) => r.operation_id)).toContain(opBId);
+    // Each ranch's own inventory moved, independently.
+    const [hayA] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayAId}`;
+    const [hayB] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayBId}`;
+    expect(Number(hayA.quantity)).toBe(105); // 100 + 5 (A's own restock)
+    expect(Number(hayB.quantity)).toBe(54); // 50 + 4 (B's own restock)
+
+    // Same for pasture activities: both ranches record under the SAME key.
+    const aActivity = await savePastureActivityCore(db, opAId, {
+      client_request_id: shared,
+      pasture_id: pastureA1,
+      activity_date: inMonth(),
+      activity_type: "fencing",
+      cost_cents: 15000,
+      notes: null,
+      record_expense: false,
+    });
+    expect(aActivity.ok).toBe(true);
+    if (!aActivity.ok) throw new Error(aActivity.error);
+    expect(aActivity.duplicate).toBe(false);
+
+    const bActivity = await savePastureActivityCore(db, opBId, {
+      client_request_id: shared, // identical key, DIFFERENT ranch
+      pasture_id: pastureB1,
+      activity_date: inMonth(),
+      activity_type: "mowing",
+      cost_cents: 12000,
+      notes: null,
+      record_expense: false,
+    });
+    expect(bActivity.ok).toBe(true);
+    if (!bActivity.ok) throw new Error(bActivity.error);
+    expect(bActivity.duplicate).toBe(false);
+    expect(bActivity.id).not.toBe(aActivity.id);
+
+    const activityRows = await db<{ id: number; operation_id: number }[]>`
+      SELECT id, operation_id FROM pasture_activities WHERE client_request_id=${shared} ORDER BY id`;
+    expect(activityRows.length).toBe(2);
+    expect(activityRows.map((r) => r.operation_id)).toContain(opAId);
+    expect(activityRows.map((r) => r.operation_id)).toContain(opBId);
+
+    // DB-level backstop proof (bypassing the app dedupe): a SECOND row for the
+    // SAME (operation_id, client_request_id) is rejected by the NAMED
+    // constraint, while the same key under the OTHER operation still inserts.
+    let restockRaceError = "";
+    try {
+      await db`INSERT INTO restock_log (operation_id, item_kind, hay_item_id, quantity, unit, restock_date, client_request_id)
+         VALUES (${opAId}, 'hay', ${hayAId}, 1, 'bales', ${inMonth()}, ${shared})`;
+    } catch (err) {
+      restockRaceError = err instanceof Error ? err.message : String(err);
+    }
+    expect(restockRaceError).toContain("uq_restock_log_operation_request");
+
+    let activityRaceError = "";
+    try {
+      await db`INSERT INTO pasture_activities (operation_id, pasture_id, activity_date, activity_type, client_request_id)
+         VALUES (${opBId}, ${pastureB1}, ${inMonth()}, 'inspection', ${shared})`;
+    } catch (err) {
+      activityRaceError = err instanceof Error ? err.message : String(err);
+    }
+    expect(activityRaceError).toContain("uq_pasture_activities_operation_request");
+
+    // Cross-operation reuse at the raw DB level: still allowed, no collision.
+    const [crossRestock] = await db<[{ id: number }]>`
+      INSERT INTO restock_log (operation_id, item_kind, hay_item_id, quantity, unit, restock_date, client_request_id)
+      VALUES (${opBId}, 'hay', ${hayBId}, 1, 'bales', ${inMonth()}, ${shared})
+      RETURNING id`;
+    expect(crossRestock.id > 0).toBe(true);
+    await db`DELETE FROM restock_log WHERE id=${crossRestock.id}`;
+
+    // Cleanup: remove this scenario's rows and reset both inventories.
+    await db`DELETE FROM expenses WHERE (operation_id=${opAId} AND source_type='restock' AND source_id=${aRestock.id})
+             OR (operation_id=${opBId} AND source_type='restock' AND source_id=${bRestock.id})`;
+    await db`DELETE FROM restock_log WHERE client_request_id=${shared}`;
+    await db`DELETE FROM pasture_activities WHERE client_request_id=${shared}`;
+    await db`UPDATE hay_inventory SET quantity = 100 WHERE id=${hayAId}`;
+    await db`UPDATE hay_inventory SET quantity = 50 WHERE id=${hayBId}`;
+  });
+
+  test("a repeat request with the same client_request_id INSIDE Ranch A creates no duplicate inventory/activity/expense", async () => {
+    const key = `intra-a-${Date.now()}`;
+
+    const first = await restockItemCore(db, opAId, {
+      client_request_id: key,
+      item_kind: "hay",
+      item_id: hayAId,
+      quantity: 12,
+      unit: "bales",
+      restock_date: inMonth(),
+      total_cost_cents: 36000,
+      vendor: "A Retry Co",
+      notes: null,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.error);
+
+    // Same ranch, SAME key, wildly different payload — must be a no-op retry.
+    const retry = await restockItemCore(db, opAId, {
+      client_request_id: key,
+      item_kind: "hay",
+      item_id: hayAId,
+      quantity: 999,
+      unit: "bales",
+      restock_date: inMonth(),
+      total_cost_cents: 999999,
+      vendor: "A Retry Co",
+      notes: null,
+    });
+    expect(retry.ok).toBe(true);
+    if (!retry.ok) throw new Error(retry.error);
+    expect(retry.duplicate).toBe(true);
+    expect(retry.id).toBe(first.id);
+
+    // Inventory applied ONCE (100 + 12), never 100 + 12 + 999.
+    const [hay] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayAId}`;
+    expect(Number(hay.quantity)).toBe(112);
+    // Exactly ONE restock row and ONE linked expense inside Ranch A.
+    expect((await db`SELECT id FROM restock_log WHERE client_request_id=${key} AND operation_id=${opAId}`).length).toBe(1);
+    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${first.id} AND operation_id=${opAId}`).length).toBe(1);
+
+    // Same-key activity retry inside Ranch A: no duplicate activity/expense.
+    const aFirst = await savePastureActivityCore(db, opAId, {
+      client_request_id: key,
+      pasture_id: pastureA1,
+      activity_date: inMonth(),
+      activity_type: "fencing",
+      cost_cents: 20000,
+      notes: "original",
+      record_expense: true,
+    });
+    expect(aFirst.ok).toBe(true);
+    if (!aFirst.ok) throw new Error(aFirst.error);
+    const aRetry = await savePastureActivityCore(db, opAId, {
+      client_request_id: key,
+      pasture_id: pastureA2, // would be a different activity if it ran — it must NOT
+      activity_date: inMonth(),
+      activity_type: "mowing",
+      cost_cents: 888888,
+      notes: "retry must not apply",
+      record_expense: true,
+    });
+    expect(aRetry.ok).toBe(true);
+    if (!aRetry.ok) throw new Error(aRetry.error);
+    expect(aRetry.duplicate).toBe(true);
+    expect(aRetry.id).toBe(aFirst.id);
+
+    const actRows = await db<{ activity_type: string; cost_cents: number; pasture_id: number }[]>`
+      SELECT activity_type, cost_cents, pasture_id FROM pasture_activities
+      WHERE client_request_id=${key} AND operation_id=${opAId}`;
+    expect(actRows.length).toBe(1);
+    expect(actRows[0].activity_type).toBe("fencing"); // original values kept
+    expect(actRows[0].cost_cents).toBe(20000);
+    expect(actRows[0].pasture_id).toBe(pastureA1);
+    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${aFirst.id} AND operation_id=${opAId}`).length).toBe(1);
+
+    await db`DELETE FROM expenses WHERE (operation_id=${opAId} AND source_type='restock' AND source_id=${first.id})
+             OR (operation_id=${opAId} AND source_type='pasture_activity' AND source_id=${aFirst.id})`;
+    await db`DELETE FROM restock_log WHERE client_request_id=${key} AND operation_id=${opAId}`;
+    await db`DELETE FROM pasture_activities WHERE client_request_id=${key} AND operation_id=${opAId}`;
+    await db`UPDATE hay_inventory SET quantity = 100 WHERE id=${hayAId}`;
+  });
+
+  test("a repeat request with the same client_request_id INSIDE Ranch B also creates no duplicate record within Ranch B", async () => {
+    const key = `intra-b-${Date.now()}`;
+
+    const first = await restockItemCore(db, opBId, {
+      client_request_id: key,
+      item_kind: "hay",
+      item_id: hayBId,
+      quantity: 7,
+      unit: "bales",
+      restock_date: inMonth(),
+      total_cost_cents: 21000,
+      vendor: "B Retry Co",
+      notes: null,
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.error);
+
+    const retry = await restockItemCore(db, opBId, {
+      client_request_id: key,
+      item_kind: "hay",
+      item_id: hayBId,
+      quantity: 555,
+      unit: "bales",
+      restock_date: inMonth(),
+      total_cost_cents: 555555,
+      vendor: "B Retry Co",
+      notes: null,
+    });
+    expect(retry.ok).toBe(true);
+    if (!retry.ok) throw new Error(retry.error);
+    expect(retry.duplicate).toBe(true);
+    expect(retry.id).toBe(first.id);
+
+    // Ranch B's inventory applied ONCE (50 + 7); one log row; one linked expense.
+    const [hay] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayBId}`;
+    expect(Number(hay.quantity)).toBe(57);
+    expect((await db`SELECT id FROM restock_log WHERE client_request_id=${key} AND operation_id=${opBId}`).length).toBe(1);
+    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${first.id} AND operation_id=${opBId}`).length).toBe(1);
+
+    // Same-key activity retry inside Ranch B.
+    const bFirst = await savePastureActivityCore(db, opBId, {
+      client_request_id: key,
+      pasture_id: pastureB1,
+      activity_date: inMonth(),
+      activity_type: "water_system",
+      cost_cents: 9000,
+      notes: "trough float",
+      record_expense: true,
+    });
+    expect(bFirst.ok).toBe(true);
+    if (!bFirst.ok) throw new Error(bFirst.error);
+
+    const bRetry = await savePastureActivityCore(db, opBId, {
+      client_request_id: key,
+      pasture_id: pastureB1,
+      activity_date: inMonth(),
+      activity_type: "repair",
+      cost_cents: 777777,
+      notes: "retry must not apply",
+      record_expense: true,
+    });
+    expect(bRetry.ok).toBe(true);
+    if (!bRetry.ok) throw new Error(bRetry.error);
+    expect(bRetry.duplicate).toBe(true);
+    expect(bRetry.id).toBe(bFirst.id);
+
+    const actRows = await db<{ activity_type: string; cost_cents: number }[]>`
+      SELECT activity_type, cost_cents FROM pasture_activities
+      WHERE client_request_id=${key} AND operation_id=${opBId}`;
+    expect(actRows.length).toBe(1);
+    expect(actRows[0].activity_type).toBe("water_system");
+    expect(actRows[0].cost_cents).toBe(9000);
+    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${bFirst.id} AND operation_id=${opBId}`).length).toBe(1);
+
+    await db`DELETE FROM expenses WHERE (operation_id=${opBId} AND source_type='restock' AND source_id=${first.id})
+             OR (operation_id=${opBId} AND source_type='pasture_activity' AND source_id=${bFirst.id})`;
+    await db`DELETE FROM restock_log WHERE client_request_id=${key} AND operation_id=${opBId}`;
+    await db`DELETE FROM pasture_activities WHERE client_request_id=${key} AND operation_id=${opBId}`;
+    await db`UPDATE hay_inventory SET quantity = 50 WHERE id=${hayBId}`;
   });
 });
 

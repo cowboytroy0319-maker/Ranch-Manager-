@@ -136,8 +136,9 @@ Sign in, then:
   form-open; a second submit with the same key (e.g. double-tap) hits the
   server's dedupe and returns `duplicate:true` — no second activity row, no
   second expense. The UI surfaces the server message **verbatim**:
-  "Already recorded — activity and expense unchanged." DB unique index on
-  `pasture_activities.client_request_id` is the race backstop.
+  "Already recorded — activity and expense unchanged." DB unique constraint on
+  `(operation_id, client_request_id)` (`uq_pasture_activities_operation_request`)
+  is the race backstop — idempotency is per operation (ranch), never global.
 - **Edit** (✏️ on a timeline row): opens the activity form in edit mode with
   date/type/notes/cost/"Record as expense" editable; saves via
   `updatePastureActivity` (absolute values, retriable). The linked expense
@@ -236,3 +237,22 @@ the seeded local Postgres (127.0.0.1:5433) — real rendered records, no mockups
 8. **Pastures list at phone width**: each paddock is a card (acres, group,
    condition, water, 21-day tallies) with "View / manage" — no sideways swipe
    needed anywhere.
+
+## C3 (owner change request #3) — per-operation idempotency in the DB
+Owner fix on PR #4: `client_request_id` was globally `UNIQUE` on `restock_log`
+and `pasture_activities`, which wrongly made request ids unique across every
+ranch even though all app lookups scope by `operation_id`. Migration 0018 now
+declares named composite constraints — `uq_restock_log_operation_request` and
+`uq_pasture_activities_operation_request`, each `UNIQUE (operation_id,
+client_request_id)` — so the same request id may be reused by two ranches with
+no collision, while a same-ranch retry still cannot double-insert.
+`client_request_id` is now `NOT NULL` on both tables (verified: the only
+insert paths — `restockItemCore` and `savePastureActivityCore` — require it via
+their parsers; the seed does not write these tables). Comments in
+`src/server/feed.ts`, `src/server/pasture.ts`, the migration, and
+`docs/EXPENSES_AND_LINKED_RECORDS.md` now state idempotency is PER OPERATION.
+New suite cases prove: A and B share one `client_request_id` and each gets its
+own restock + activity; a same-key retry inside A duplicates nothing; ditto
+inside B; a raw same-(operation, key) insert is rejected by the named
+constraints. Local test DBs were dropped and recreated so the amended 0018
+applied cleanly. Nothing was applied to any live database.

@@ -49,7 +49,8 @@ ALTER TABLE pastures ADD COLUMN IF NOT EXISTS water_status text NOT NULL DEFAULT
 ALTER TABLE pastures ADD COLUMN IF NOT EXISTS condition text NOT NULL DEFAULT 'good'
   CHECK (condition IN ('excellent', 'good', 'fair', 'poor', 'resting'));
 
--- ---- restock_log: hay/feed inventory restocks (idempotent via client key) ----
+-- ---- restock_log: hay/feed inventory restocks (idempotent PER OPERATION via
+--      the (operation_id, client_request_id) pair — never globally) ----
 CREATE TABLE IF NOT EXISTS restock_log (
   id                 integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   operation_id       integer NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
@@ -62,17 +63,26 @@ CREATE TABLE IF NOT EXISTS restock_log (
   total_cost_cents   integer CHECK (total_cost_cents IS NULL OR total_cost_cents >= 0),
   vendor             text,
   notes              text,
-  client_request_id  text UNIQUE,
+  -- Every app-created restock supplies a client_request_id (the parser in
+  -- src/server/feed.ts requires it), so the column is NOT NULL and the
+  -- uniqueness backstop can be a true composite constraint. Idempotency is
+  -- PER OPERATION (ranch), NOT global: two different ranches may reuse the
+  -- same client_request_id and each gets its own row. A global UNIQUE on the
+  -- request id alone would leak ids across ranches and wrongly reject one
+  -- ranch's retry because another ranch happened to generate the same UUID.
+  client_request_id  text NOT NULL,
   created_at         timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT restock_log_one_item CHECK (
     (hay_item_id IS NOT NULL AND feed_item_id IS NULL)
     OR (hay_item_id IS NULL AND feed_item_id IS NOT NULL)
-  )
+  ),
+  CONSTRAINT uq_restock_log_operation_request UNIQUE (operation_id, client_request_id)
 );
 CREATE INDEX IF NOT EXISTS restock_log_operation_id_idx ON restock_log (operation_id);
 
 -- ---- pasture_activities: work/cost events on a pasture (expense-linked;
---      idempotent via client_request_id, same pattern as restock_log) ----
+--      idempotent PER OPERATION via the (operation_id, client_request_id)
+--      pair, same pattern as restock_log) ----
 CREATE TABLE IF NOT EXISTS pasture_activities (
   id             integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   operation_id   integer NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
@@ -83,8 +93,14 @@ CREATE TABLE IF NOT EXISTS pasture_activities (
                   'inspection', 'other')),
   cost_cents     integer CHECK (cost_cents IS NULL OR cost_cents >= 0),
   notes          text,
-  client_request_id text UNIQUE,
-  created_at     timestamptz NOT NULL DEFAULT now()
+  -- Every app-created activity supplies a client_request_id (the parser in
+  -- src/server/pasture.ts requires it), so the column is NOT NULL. As on
+  -- restock_log, idempotency is PER OPERATION (ranch), NOT global: the named
+  -- composite constraint below is the race backstop, and the same
+  -- client_request_id may be reused by a different ranch without collision.
+  client_request_id text NOT NULL,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_pasture_activities_operation_request UNIQUE (operation_id, client_request_id)
 );
 CREATE INDEX IF NOT EXISTS pasture_activities_operation_id_idx ON pasture_activities (operation_id);
 CREATE INDEX IF NOT EXISTS pasture_activities_pasture_id_idx ON pasture_activities (pasture_id);

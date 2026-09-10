@@ -75,15 +75,24 @@ the money view and the work view can never drift apart:
 
 ## Idempotency (no duplicate charges from retries or double-taps)
 
-- Restocks are submitted with a `client_request_id` (a UUID generated **once
-  per form-open**, kept across retries so a double-submit or a retry after a
-  flaky connection cannot apply twice).
+- Restocks and pasture activities are submitted with a `client_request_id`
+  (a UUID generated **once per form-open**, kept across retries so a
+  double-submit or a retry after a flaky connection cannot apply twice).
 - Inside the restock transaction, the server first looks up
   `restock_log WHERE client_request_id = $ AND operation_id = $`. If found it
   returns the original result flagged `duplicate: true` **without** re-applying
-  inventory or creating another expense.
-- The column is `UNIQUE` in the database, so even two simultaneous requests
-  cannot both insert.
+  inventory or creating another expense. Pasture activities do the same against
+  `pasture_activities` with the same `client_request_id + operation_id`
+  scoping.
+- **Idempotency is per operation (ranch), not global.** The database enforces
+  named composite unique constraints — `uq_restock_log_operation_request` on
+  `restock_log (operation_id, client_request_id)` and
+  `uq_pasture_activities_operation_request` on
+  `pasture_activities (operation_id, client_request_id)` — so even two
+  simultaneous requests from the same ranch cannot both insert, while two
+  different ranches may freely reuse the same `client_request_id` (request ids
+  are client-generated UUIDs; uniqueness across ranches would wrongly reject
+  one ranch's retry and leak ids between operations).
 - Manual expenses do not use idempotency keys (they are simple single-row
   inserts guarded by the form's disabled-while-saving state).
 

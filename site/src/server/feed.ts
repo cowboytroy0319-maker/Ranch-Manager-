@@ -349,11 +349,15 @@ export const logUsage = createServerFn({ method: "POST" })
 
 // ---------------------------------------------------------------------------
 // Write: hay/feed RESTOCK — adds inventory and (optionally) records ONE linked
-// expense, all in one transaction. Idempotent via client_request_id so a
-// double-tap / retry / refresh never adds the same stock twice or creates a
-// duplicate expense (the unique index expenses_source_once_uniq is the DB
-// backstop for exactly-once). Category for the linked expense is 'hay_feed';
-// source_type is 'restock'; source_id is the restock_log row.
+// expense, all in one transaction. Idempotent PER OPERATION (ranch) via
+// client_request_id: a double-tap / retry / refresh by the same ranch never
+// adds the same stock twice or creates a duplicate expense (the DB backstops
+// are the named composite unique uq_restock_log_operation_request on
+// (operation_id, client_request_id) and expenses_source_once_uniq for
+// exactly-once expenses). Two different ranches may reuse the same
+// client_request_id — uniqueness is never global. Category for the linked
+// expense is 'hay_feed'; source_type is 'restock'; source_id is the
+// restock_log row.
 // ---------------------------------------------------------------------------
 
 export type RestockInput = {
@@ -428,6 +432,9 @@ export async function restockItemCore(
   return await db.begin(async (tx) => {
     // Idempotency: the SAME client_request_id for this operation returns the
     // original row WITHOUT re-applying inventory or creating another expense.
+    // Per operation, never global — the DB constraint
+    // uq_restock_log_operation_request on (operation_id, client_request_id)
+    // matches this exact scoping and is the race backstop.
     const prior = await tx<[{ id: number; total_cost_cents: number | null }]>`
       SELECT id, total_cost_cents FROM restock_log
       WHERE client_request_id = ${r.client_request_id} AND operation_id = ${operationId}`;
