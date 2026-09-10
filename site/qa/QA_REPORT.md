@@ -113,9 +113,10 @@ Sign in, then:
 
 1. `/pasture?open=<id>` deep link doesn't open the detail when the list loads
    async after mount (tap path works). Minor; fix post-release.
-2. The pasture board is a wide table inside a horizontal-scroll container at
-   phone widths (usable with a swipe; no page-level overflow). A card layout
-   for phones is future work.
+2. ~~The pasture board is a wide table inside a horizontal-scroll container at
+   phone widths~~ **FIXED in C2:** below md the board renders a phone-safe card
+   list (see `qa/screenshots/pasture-cards.png`); the desktop table returns at
+   md+. The `/pasture?open=<id>` deep-link nit (#1) remains.
 3. Restock history view (restock_log list in the UI) is optional per spec and
    not built this release — the data is recorded.
 4. Per-animal pasture is free text and not synced by group moves (documented
@@ -168,24 +169,50 @@ Sign in, then:
   returns at md+. "Download starter templates" links verified reachable in every
   empty state: shared `TemplatesLink` renders `inline-flex min-h-11` (44px) at
   all widths; present in livestock/pasture/expenses empty states (markup-checked).
-### CI (owner blocker #4)
+### CI (owner blocker #4) — GREEN
 - `.github/workflows/ci.yml` on pull_request: setup-bun → bun install →
   postgres:16 service container → `bun run db:migrate` against it → `bun test`
-  → guarded typecheck → `bun run build`.
+  → `bun run build` → guarded typecheck (after the build — see below).
+- **Fix 1 — test step was dying on the local-only guard:** every DB-backed test
+  file refuses to run unless `DATABASE_URL` contains `127.0.0.1` (protecting the
+  owner's Neon). The workflow passed `localhost:5432`, so all 8 guarded
+  beforeAlls threw. The service container was already mapped 5432:5432 on the
+  runner host; the URL host is now `127.0.0.1:5432` — CI satisfies the guard,
+  the guard is unchanged.
+- **Fix 2 — typecheck step moved after Build:** on a fresh checkout the
+  gitignored generated files (`src/routeTree.gen.ts`, `dist/`) don't exist, so
+  tsc reported hundreds of phantom errors (missing routeTree.gen collapses
+  TanStack route types to any). The build regenerates both (verified: renamed
+  routeTree.gen.ts away, build recreated it), so tsc after the build sees the
+  same 15 baseline errors a developer machine sees.
 - Typecheck is a diff guard: `site/tsc-baseline.txt` lists the 15 known
   pre-existing tsc errors (exact sorted `file(line,col): error TSxxxx: message`
   lines); the step fails only on an error NOT in the baseline (`comm -23`),
   so the 15 out-of-scope nits stay unfixed without hiding new breakage.
   Baseline may only shrink. Local verification: current tsc output diffed
-  against baseline → 0 new errors.
-### Screenshots (390px, seeded scratch DB, port 3013)
-- NOT captured this session — the scratch server (port 3013, seeded ranch_qa
-  DB) and build were ready, but the session's work budget ran out before the
-  browser captures. The three targets (pasture-cards.png, activity-edit.png,
-  linked-expense-row.png) and their exact content are described above; the
-  environments/scripts remain in place (/tmp/serve-qa.ts, port 3013) for a
-  follow-up delegation to capture in minutes. The B2 screenshots
-  (expenses/pasture-detail/record-activity/restock/move-group) predate C2.
+  against baseline → 0 new errors (15 total = 15 baseline).
+- **Result: run 34426718470 on commit 0fd382b — success (green).**
+  https://github.com/cowboytroy0319-maker/Ranch-Manager-/actions/runs/34426718470
+  (Test step on the prior commit e8cdf67: 230 pass / 0 fail across 12 files;
+  the typecheck fix is workflow-only.)
+### Screenshots (390px, real browser, seeded local `ranch` DB, scratch port 3013)
+All eight captured — the five B2 shots plus the three C2 shots below, each a
+real 390×844 browser capture of the built branch served on port 3013 against
+the seeded local Postgres (127.0.0.1:5433) — real rendered records, no mockups:
+- `qa/screenshots/pasture-cards.png` (C2) — pasture board card layout at phone
+  width: Back Forty / Bull Lot / Calf Nursery cards with acres, group,
+  condition, water, 21-day grazed/rest tallies, notes, full-width
+  "View / manage" — no horizontal swipe anywhere.
+- `qa/screenshots/activity-edit.png` (C2) — "Edit activity — North River
+  Pasture" form in edit mode (Fencing, $45.50, notes, "Record as expense"
+  checked) with the rule spelled out: "Changes save absolutely; the linked
+  expense follows (no separate expense editing)" — plus the
+  "Activity recorded and a Land / pasture expense was linked." flash.
+- `qa/screenshots/linked-expense-row.png` (C2) — Expenses list with the linked
+  row "Land / pasture $45.50 — North River Pasture — ↳ pasture activity —
+  Created from a pasture activity — corrected there, not here. Open in
+  Pasture →" and NO Delete/Edit buttons, beside manual rows that keep
+  Edit/Delete.
 ### Revised owner phone test (≤8 steps)
 1. **Expenses → ＋ Add expense**: enter a vendor, amount, category, save → the
    row shows in the ledger with Delete available (manual row).
