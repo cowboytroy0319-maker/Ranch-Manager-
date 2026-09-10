@@ -179,11 +179,13 @@ Sign in, then:
   Baseline may only shrink. Local verification: current tsc output diffed
   against baseline → 0 new errors.
 ### Screenshots (390px, seeded scratch DB, port 3013)
-- pasture-cards.png — pasture board card layout at 390px (name/acres/group/
-  condition/water + View/manage, no horizontal swipe).
-- activity-edit.png — the activity form open in edit mode from a timeline row.
-- linked-expense-row.png — an expenses row with the "↳ pasture activity" source
-  label + "Open in Pasture" action and NO Delete button.
+- NOT captured this session — the scratch server (port 3013, seeded ranch_qa
+  DB) and build were ready, but the session's work budget ran out before the
+  browser captures. The three targets (pasture-cards.png, activity-edit.png,
+  linked-expense-row.png) and their exact content are described above; the
+  environments/scripts remain in place (/tmp/serve-qa.ts, port 3013) for a
+  follow-up delegation to capture in minutes. The B2 screenshots
+  (expenses/pasture-detail/record-activity/restock/move-group) predate C2.
 ### Revised owner phone test (≤8 steps)
 1. **Expenses → ＋ Add expense**: enter a vendor, amount, category, save → the
    row shows in the ledger with Delete available (manual row).
