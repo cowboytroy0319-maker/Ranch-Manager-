@@ -27,27 +27,31 @@ export { isPreviewEnvironment };
  *   });
  *
  * ============================================================================
- * PREVIEW vs. LIVE DATABASE SELECTION
+ * DEPLOYMENT-MODE DATABASE SELECTION (APP_ENV)
  * ============================================================================
  * The platform serves the preview ("working site") and the live site from the
  * SAME build bundle — there is no build-time or request-time signal in the app
  * itself that can tell them apart (the bundle contains neither NODE_ENV nor a
  * host allowlist, and `sql()` is a process-wide singleton, not request-scoped).
- * The one reliable lever is per-deployment environment variables:
+ * The one reliable lever is a per-deployment environment variable that names
+ * the mode explicitly:
  *
- *   • LIVE:  DATABASE_URL = the production Neon string. PREVIEW_DATABASE_URL
- *     must NOT be set. Nothing below changes production behavior in any way.
- *   • PREVIEW: DATABASE_URL may still be present, plus PREVIEW_DATABASE_URL
- *     pointing at a DISPOSABLE scratch database (its own Neon project — never
- *     production data). Whenever PREVIEW_DATABASE_URL is set, sql() uses it.
- *   • Local dev: set DATABASE_URL only — behavior is exactly as before.
+ *   APP_ENV = "production" | "preview"
  *
- * Why presence-of-var is the switch (instead of host detection): both
- * environments run the identical bundle, env vars are the only per-deployment
- * configuration the platform offers, and it fails safe — a deployment without
- * the variable cannot possibly be redirected anywhere. The owner adds
- * PREVIEW_DATABASE_URL to the preview deployment only; see
- * docs/PREVIEW_ENVIRONMENT.md.
+ * `resolveDatabaseUrl()` chooses the connection string from APP_ENV:
+ *
+ *   • APP_ENV === "preview" (trimmed, exact): return PREVIEW_DATABASE_URL ONLY.
+ *     If PREVIEW_DATABASE_URL is missing/blank, return undefined — FAIL CLOSED;
+ *     never fall back to DATABASE_URL.
+ *   • Otherwise (APP_ENV === "production", unset, or ANY other value including
+ *     local dev): return DATABASE_URL ONLY — even if PREVIEW_DATABASE_URL is
+ *     accidentally present, it is ignored.
+ *
+ * This is deliberately NOT "presence of PREVIEW_DATABASE_URL": a production
+ * deployment with PREVIEW_DATABASE_URL accidentally set must never silently use
+ * the scratch database. APP_ENV is the explicit switch — the owner sets it on
+ * each deployment (see docs/PREVIEW_ENVIRONMENT.md). There is no hostname
+ * detection anywhere.
  *
  * The client returned by sql() is GUARDED: any database-originated failure is
  * rewritten by src/dbErrors.ts to a customer-safe message before a handler
@@ -57,27 +61,40 @@ export { isPreviewEnvironment };
  * (migrations/seeding) where technical error text is the point.
  */
 
-/** Env var the owner sets on the PREVIEW deployment to point it at a
- * disposable database. Never set it on the live deployment. */
+/** Env var that names the deployment mode: "production" | "preview". It is the
+ * ONLY switch for which database to use — never presence of PREVIEW_DATABASE_URL. */
+export const APP_ENV_VAR = "APP_ENV";
+
+/** Env var the owner sets on the PREVIEW deployment (alongside APP_ENV=preview)
+ * to point it at a disposable database. Never set it on the live deployment. */
 export const PREVIEW_ENV_VAR = "PREVIEW_DATABASE_URL";
 
-const databaseUrl = (): string | undefined => {
-  const preview = process.env.PREVIEW_DATABASE_URL?.trim();
-  if (preview) return preview; // preview deployment → its scratch database
+/**
+ * Resolve which Postgres connection string to use, keyed off APP_ENV (explicit
+ * deployment mode). Exported so the four selection cases can be tested directly.
+ *
+ *   • APP_ENV === "preview"  → PREVIEW_DATABASE_URL ONLY; missing/blank → undefined (fail closed).
+ *   • anything else          → DATABASE_URL ONLY (PREVIEW_DATABASE_URL ignored even if present).
+ */
+export const resolveDatabaseUrl = (): string | undefined => {
+  const appEnv = process.env.APP_ENV?.trim();
+  if (appEnv === "preview") {
+    return process.env.PREVIEW_DATABASE_URL?.trim() || undefined;
+  }
   return process.env.DATABASE_URL?.trim() || undefined;
 };
 
 /** The raw (unguarded) pooled client. Operator tooling only. */
 export const rawSql = (): postgres.Sql => {
   if (client) return client;
-  const url = databaseUrl();
+  const url = resolveDatabaseUrl();
   if (!url) {
     // This error can reach the client through handler catch blocks that pass
     // err.message through, so keep it customer-safe; the technical detail is
     // logged server-side only.
     console.error(
       isPreviewEnvironment()
-        ? `${PREVIEW_ENV_VAR} (and DATABASE_URL) are not set — connect a database before running queries.`
+        ? `${PREVIEW_ENV_VAR} is not set — connect the preview database before running queries (APP_ENV=preview).`
         : "DATABASE_URL is not set — connect a database before running queries."
     );
     throw new Error(GENERIC_DB_ERROR_MESSAGE);
@@ -168,7 +185,7 @@ export const sql = (): postgres.Sql => {
 
 /** True when a connection string is present (lets the UI render a clear
  * "database not configured" state instead of surfacing a raw error). */
-export const isDatabaseConfigured = (): boolean => Boolean(databaseUrl());
+export const isDatabaseConfigured = (): boolean => Boolean(resolveDatabaseUrl());
 
 /** Close the pooled connection (used by the db scripts; server code never ends it). */
 export const closeDb = async (): Promise<void> => {

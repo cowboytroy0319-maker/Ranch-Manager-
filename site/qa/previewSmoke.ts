@@ -6,15 +6,16 @@
  *   runuser -u postgres -- $PGBIN/psql -p 5433 \
  *     -c "DROP DATABASE IF EXISTS ranch_preview;" -c "CREATE DATABASE ranch_preview;"
  *   DATABASE_URL=postgresql://postgres@127.0.0.1:5433/ranch_preview bun run db:migrate
+ *   APP_ENV=preview \
  *   DATABASE_URL=postgresql://postgres@127.0.0.1:5433/ranch_preview \
  *   PREVIEW_DATABASE_URL=postgresql://postgres@127.0.0.1:5433/ranch_preview \
  *     bun qa/previewSmoke.ts
  *
  * It exercises the same *Core functions the createServerFn handlers run
  * (saveExpenseCore / restockItemCore / savePastureActivityCore — the exact SQL
- * of the real handlers), with the app in PREVIEW mode (PREVIEW_DATABASE_URL
- * set), and asserts the four owner-blocker flows plus that no raw database
- * error text can surface.
+ * of the real handlers), with the app in PREVIEW mode (APP_ENV=preview), and
+ * asserts the four owner-blocker flows plus that no raw database error text can
+ * surface.
  */
 import postgres from "postgres";
 import { runMigrations } from "../db/migrate";
@@ -26,6 +27,10 @@ import {
   parsePastureActivityInput,
   savePastureActivityCore,
 } from "../src/server/pasture";
+
+// This smoke test is PREVIEW-mode by definition — force the explicit switch
+// (and rely on the caller's PREVIEW_DATABASE_URL) before the db client resolves.
+process.env.APP_ENV = "preview";
 
 const db = sql();
 const today = new Date().toISOString().slice(0, 10);

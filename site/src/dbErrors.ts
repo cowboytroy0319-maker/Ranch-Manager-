@@ -13,14 +13,15 @@
  *    text before any handler ever sees them.
  *
  * 2. The rewritten message depends on the environment:
- *    • PREVIEW (PREVIEW_DATABASE_URL set): any DB failure surfaces the exact
+ *    • PREVIEW (APP_ENV === "preview"): any DB failure surfaces the exact
  *      customer-safe message  "This preview is being prepared. Please try
  *      again shortly."  — the preview DB is disposable and by definition
  *      "being prepared" whenever it is missing schema or unreachable.
- *    • LIVE (no PREVIEW_DATABASE_URL): the preview message must NEVER appear;
- *      DB failures surface the same generic customer-safe wording the codebase
- *      already uses elsewhere ("We couldn't complete that right now. Please
- *      try again.").
+ *    • PRODUCTION / any other mode (APP_ENV is "production", unset, or any
+ *      other value): the preview message must NEVER appear; DB failures
+ *      surface the same generic customer-safe wording the codebase already
+ *      uses elsewhere ("We couldn't complete that right now. Please try
+ *      again.").
  *    • App-thrown customer-safe errors (validation messages, "That hay stack
  *      no longer exists.", INVENTORY_BELOW_ZERO_ERROR, auth errors, …) are NOT
  *      database errors and pass through completely untouched, so existing
@@ -40,14 +41,13 @@ export const PREVIEW_PENDING_MESSAGE =
 export const GENERIC_DB_ERROR_MESSAGE =
   "We couldn't complete that right now. Please try again.";
 
-/** True when this deployment runs as the PREVIEW environment, per the
- * convention documented in src/db.ts: the preview deployment sets
- * PREVIEW_DATABASE_URL (its disposable scratch database); the live deployment
- * never does. */
-export const isPreviewEnvironment = (): boolean => {
-  const v = process.env.PREVIEW_DATABASE_URL;
-  return typeof v === "string" && v.trim().length > 0;
-};
+/** True only when this deployment runs as the PREVIEW environment, per the
+ * explicit APP_ENV deployment-mode switch documented in src/db.ts. Exact match
+ * after trimming — "preview". It no longer checks PREVIEW_DATABASE_URL: a
+ * production deployment that accidentally has PREVIEW_DATABASE_URL set is NOT
+ * preview. */
+export const isPreviewEnvironment = (): boolean =>
+  process.env.APP_ENV?.trim() === "preview";
 
 /** SQLSTATE is exactly 5 chars: 2-digit class + 3 alphanumerics (42P01,
  * 23505, 08006, …). Anything else with a `code` property is not a server
