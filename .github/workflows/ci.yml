@@ -37,7 +37,13 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/ranch_ci
+      # Host MUST be 127.0.0.1: the DB-backed test files (auth.test.ts,
+      # tasks.test.ts, productBlocker.test.ts, …) guard against non-local
+      # databases by refusing to run unless DATABASE_URL contains 127.0.0.1 —
+      # this protects the owner's Neon from CI. The service container's port
+      # mapping (5432:5432) makes Postgres reachable on the runner host at
+      # 127.0.0.1:5432; `localhost` would FAIL the guard (it is not 127.0.0.1).
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_ci
     steps:
       - uses: actions/checkout@v4
 
