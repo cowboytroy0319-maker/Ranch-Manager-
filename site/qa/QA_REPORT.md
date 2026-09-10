@@ -128,3 +128,82 @@ Sign in, then:
   categories — seeding failed outright on a fresh DB. Fixed: every seed insert
   now carries the default operation id, and the seeded expense categories use
   the current 12-value set. Seed is green and idempotent again.
+
+## C2 (owner change request #2, final session) — correction UI, mobile cleanup, CI
+### Activity correction (Edit / Delete) — exact behavior
+- **Duplicate create**: the activity form generates ONE idempotency key per
+  form-open; a second submit with the same key (e.g. double-tap) hits the
+  server's dedupe and returns `duplicate:true` — no second activity row, no
+  second expense. The UI surfaces the server message **verbatim**:
+  "Already recorded — activity and expense unchanged." DB unique index on
+  `pasture_activities.client_request_id` is the race backstop.
+- **Edit** (✏️ on a timeline row): opens the activity form in edit mode with
+  date/type/notes/cost/"Record as expense" editable; saves via
+  `updatePastureActivity` (absolute values, retriable). The linked expense
+  FOLLOWS the activity per server rules — upserted when cost>0 AND the box is
+  checked (amount/date/pasture/notes follow), removed when cost is blank/0 or
+  the box is unchecked. There is **no separate expense editing**. Flash states
+  which happened ("…the linked expense now matches it." / "…its linked expense
+  was removed.").
+- **Delete** (🗑 on a timeline row): explicit confirmation — "Delete this
+  activity and its linked expense?" with the exact behavior spelled out (both
+  go together in one step, can't be undone; a no-cost activity notes only the
+  activity record is removed). Confirms via `deletePastureActivity` — activity
+  AND linked expense removed in one transaction; a repeat returns the plain
+  already-removed outcome, never a raw error.
+- Verified by the C1 data-layer tests in `productBlocker.test.ts` (duplicate
+  create, edit upsert, cost-clear removal, unchecked removal, delete,
+  delete-twice safety) — 230 pass / 0 fail.
+### Linked-expense rows (expenses)
+- Linked rows (source_type restock / pasture_activity) no longer render a
+  Delete button (or Edit). They show the source label ("↳ hay/feed restock" /
+  "↳ pasture activity") plus a source-management action link — "Open in Hay &
+  Feed" (/feed) or "Open in Pasture" (/pasture?open=<id>, module fallback).
+  Manual rows keep Edit + Delete + confirmation. Verified in
+  `expenseUI.test.ts` + row markup (`!r.linked` guards both buttons).
+### Pasture board on phones
+- Below md (375/390px) the board renders a card list: name, acres, group,
+  condition, water, 21-day grazed/rest tallies, and a full-width "View / manage"
+  button (≥44px) — no horizontal swipe to reach any action. The desktop table
+  returns at md+. "Download starter templates" links verified reachable in every
+  empty state: shared `TemplatesLink` renders `inline-flex min-h-11` (44px) at
+  all widths; present in livestock/pasture/expenses empty states (markup-checked).
+### CI (owner blocker #4)
+- `.github/workflows/ci.yml` on pull_request: setup-bun → bun install →
+  postgres:16 service container → `bun run db:migrate` against it → `bun test`
+  → guarded typecheck → `bun run build`.
+- Typecheck is a diff guard: `site/tsc-baseline.txt` lists the 15 known
+  pre-existing tsc errors (exact sorted `file(line,col): error TSxxxx: message`
+  lines); the step fails only on an error NOT in the baseline (`comm -23`),
+  so the 15 out-of-scope nits stay unfixed without hiding new breakage.
+  Baseline may only shrink. Local verification: current tsc output diffed
+  against baseline → 0 new errors.
+### Screenshots (390px, seeded scratch DB, port 3013)
+- pasture-cards.png — pasture board card layout at 390px (name/acres/group/
+  condition/water + View/manage, no horizontal swipe).
+- activity-edit.png — the activity form open in edit mode from a timeline row.
+- linked-expense-row.png — an expenses row with the "↳ pasture activity" source
+  label + "Open in Pasture" action and NO Delete button.
+### Revised owner phone test (≤8 steps)
+1. **Expenses → ＋ Add expense**: enter a vendor, amount, category, save → the
+   row shows in the ledger with Delete available (manual row).
+2. **Pastures → tap a pasture → 📋 Record activity**: enter cost 45.50, keep
+   "Record as expense" checked, save → flash "Activity recorded and a Land /
+   pasture expense was linked." — the timeline row appears.
+3. **Expenses**: find the new row — it shows "↳ pasture activity" with an
+   "Open in Pasture" link and **no Delete button** (linked rows are corrected at
+   the source). Manual rows from step 1 still have Delete.
+4. **Back on the pasture detail → ✏️ Edit** on the activity: clear the cost,
+   save → flash "…its linked expense was removed." → the Expenses row from
+   step 3 is gone.
+5. **Edit again**: re-enter the cost, save → the linked expense reappears in
+   Expenses with the updated amount (edit created it — no separate expense
+   editing needed).
+6. **Double-tap safety**: tap 📋 Record activity twice quickly on the same form
+   → only one activity is recorded; the duplicate attempt flashes
+   "Already recorded — activity and expense unchanged."
+7. **🗑 Delete** on the activity → confirmation says activity + linked expense
+   go together → confirm → both disappear from the timeline and Expenses.
+8. **Pastures list at phone width**: each paddock is a card (acres, group,
+   condition, water, 21-day tallies) with "View / manage" — no sideways swipe
+   needed anywhere.
