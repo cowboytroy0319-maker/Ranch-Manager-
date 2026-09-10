@@ -1,8 +1,9 @@
 # Ranch Manager Pro — CI (runs on every pull request)
 #
 # Steps: install deps with Bun → start a Postgres 16 service container →
-# migrate a scratch CI database → run the test suite → typecheck against the
-# KNOWN-ERRORS BASELINE → production build.
+# migrate a scratch CI database → run the test suite → production build →
+# typecheck against the KNOWN-ERRORS BASELINE (after the build — see the
+# note at the typecheck step for why the order matters).
 #
 # TYPECHECK BASELINE (site/tsc-baseline.txt):
 # `tsc --noEmit` currently exits non-zero on 15 PRE-EXISTING type nits
@@ -65,6 +66,19 @@ jobs:
 
       # Typecheck guard: fail on any error NOT in the baseline. The baseline
       # file lists the 15 known pre-existing errors (see header comment).
+      #
+      # NOTE: this step runs AFTER Build, on purpose. On a fresh checkout the
+      # generated files `src/routeTree.gen.ts` (written by the TanStack Router
+      # vite plugin) and `dist/` do not exist yet — they are gitignored build
+      # artifacts that exist on every developer machine, where the baseline
+      # was diffed. Running tsc before the build reports ~hundreds of phantom
+      # errors (missing routeTree.gen → route types collapse to any) that are
+      # NOT real regressions. After `bun run build` both exist, and tsc sees
+      # exactly the same 15 baseline errors as a developer machine.
+      - name: Build
+        working-directory: site
+        run: bun run build
+
       - name: Typecheck (fail on errors not in site/tsc-baseline.txt)
         working-directory: site
         run: |
@@ -77,7 +91,3 @@ jobs:
             exit 1
           fi
           echo "Typecheck OK — no new errors beyond the $(wc -l < tsc-baseline.txt) baseline entries."
-
-      - name: Build
-        working-directory: site
-        run: bun run build
