@@ -14,7 +14,7 @@
  * due dates / recent usage always land in the right window regardless of when
  * you seed.
  */
-import { closeDb, sql } from "../src/db";
+import { closeDb, rawSql, sql } from "../src/db";
 import { runMigrations } from "./migrate";
 
 const day = 24 * 60 * 60 * 1000;
@@ -189,6 +189,12 @@ const rnd = (n: number): number => {
   return x - Math.floor(x);
 };
 
+/** Migrations 0013+ scope every module table to an operation (NOT NULL
+ * operation_id). All seed rows are backed onto the default operation — the
+ * single-tenant scope today — resolved once at the top of seed(); the helper
+ * functions below read it from here. */
+let seedOperationId = 0;
+
 /** 18 days of plausible feeding across the herd groups (dates relative to now). */
 async function seedUsage(
   db: ReturnType<typeof sql>,
@@ -214,10 +220,10 @@ async function seedUsage(
     notes?: string
   ) => {
     await db`
-      INSERT INTO usage_log (log_date, item_kind, hay_item_id, feed_item_id, quantity, unit, herd_group_id, pasture, notes)
+      INSERT INTO usage_log (log_date, item_kind, hay_item_id, feed_item_id, quantity, unit, herd_group_id, pasture, notes, operation_id)
       VALUES (${daysFromNow(-daysAgo)}, ${kind},
               ${kind === "hay" ? itemId : null}, ${kind === "feed" ? itemId : null},
-              ${quantity}, ${unit}, ${groupId}, ${pasture}, ${notes ?? null})`;
+              ${quantity}, ${unit}, ${groupId}, ${pasture}, ${notes ?? null}, ${seedOperationId})`;
     n += 1;
   };
 
@@ -413,10 +419,10 @@ async function seedFuelLog(db: ReturnType<typeof sql>, eqId: Map<string, number>
   ) => {
     await db`
       INSERT INTO fuel_log (equipment_id, fuel_date, fuel_type, gallons, cost_cents,
-                            price_per_gal_cents, meter_hours, meter_miles, location, notes)
+                            price_per_gal_cents, meter_hours, meter_miles, location, notes, operation_id)
       VALUES (${get(unit)}, ${daysFromNow(-daysAgo)}, ${fuelType}, ${gallons},
               ${Math.round(gallons * pricePerGalCents)}, ${pricePerGalCents},
-              ${meterHours}, ${meterMiles}, ${location}, ${notes ?? null})`;
+              ${meterHours}, ${meterMiles}, ${location}, ${notes ?? null}, ${seedOperationId})`;
     n += 1;
   };
 
@@ -449,10 +455,11 @@ async function seedEquipment(
     if (id == null) {
       const [row] = await db<[{ id: number }]>`
         INSERT INTO equipment (name, category, make, model, year, hours, miles, condition, status,
-                               location, license_plate, fuel_type, notes)
+                               location, license_plate, fuel_type, notes, operation_id)
         VALUES (${e.name}, ${e.category}, ${e.make ?? null}, ${e.model ?? null}, ${e.year ?? null},
                 ${e.hours ?? null}, ${e.miles ?? null}, ${e.condition ?? null}, ${e.status},
-                ${e.location ?? null}, ${e.license_plate ?? null}, ${e.fuel_type ?? null}, ${e.notes ?? null})
+                ${e.location ?? null}, ${e.license_plate ?? null}, ${e.fuel_type ?? null}, ${e.notes ?? null},
+                ${seedOperationId})
         RETURNING id`;
       id = row.id;
     }
@@ -471,11 +478,11 @@ async function seedEquipment(
     await db`
       INSERT INTO maintenance_records (equipment_id, service_date, service_type, description, cost_cents,
                                        meter_hours, meter_miles, status, next_due_date, next_due_hours,
-                                       next_due_miles, vendor)
+                                       next_due_miles, vendor, operation_id)
       VALUES (${eq}, ${daysFromNow(m.service_date)}, ${m.service_type}, ${m.description}, ${m.cost_cents ?? null},
               ${m.meter_hours ?? null}, ${m.meter_miles ?? null}, ${m.status ?? "done"},
               ${m.next_due_date !== undefined ? daysFromNow(m.next_due_date) : null},
-              ${m.next_due_hours ?? null}, ${m.next_due_miles ?? null}, ${m.vendor ?? null})`;
+              ${m.next_due_hours ?? null}, ${m.next_due_miles ?? null}, ${m.vendor ?? null}, ${seedOperationId})`;
   }
 
   const fuel = await seedFuelLog(db, eqId);
@@ -497,8 +504,8 @@ async function seedPastures(
     let id = await findId(db, "pastures", "name", p.name);
     if (id == null) {
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO pastures (name, size_acres, location, status, soil_type, notes)
-        VALUES (${p.name}, ${p.size_acres}, ${p.location}, ${p.status}, ${p.soil_type ?? null}, ${p.notes ?? null})
+        INSERT INTO pastures (name, size_acres, location, status, soil_type, notes, operation_id)
+        VALUES (${p.name}, ${p.size_acres}, ${p.location}, ${p.status}, ${p.soil_type ?? null}, ${p.notes ?? null}, ${seedOperationId})
         RETURNING id`;
       id = row.id;
     }
@@ -524,8 +531,8 @@ async function seedPastures(
       const pos = (d + p.offset) % cycle;
       const status = pos < p.graze ? "grazing" : "rest";
       await db`
-        INSERT INTO grazing_log (pasture_id, log_date, status)
-        VALUES (${id}, ${daysFromNow(-d)}, ${status})`;
+        INSERT INTO grazing_log (pasture_id, log_date, status, operation_id)
+        VALUES (${id}, ${daysFromNow(-d)}, ${status}, ${seedOperationId})`;
       grazing += 1;
     }
   }
@@ -534,9 +541,9 @@ async function seedPastures(
     const pid = pastureId.get(a.pasture);
     if (pid == null) throw new Error(`seed assignment references unknown pasture ${a.pasture}`);
     await db`
-      INSERT INTO pasture_assignments (pasture_id, herd_group_id, assigned_at, target_grazing_days, ended_at, notes)
+      INSERT INTO pasture_assignments (pasture_id, herd_group_id, assigned_at, target_grazing_days, ended_at, notes, operation_id)
       VALUES (${pid}, ${a.group !== null ? groupIds[a.group] : null}, ${daysFromNow(a.assigned)},
-              ${a.target_days}, ${a.ended !== undefined ? daysFromNow(a.ended) : null}, ${a.notes ?? null})`;
+              ${a.target_days}, ${a.ended !== undefined ? daysFromNow(a.ended) : null}, ${a.notes ?? null}, ${seedOperationId})`;
     assignments += 1;
   }
 
@@ -544,9 +551,9 @@ async function seedPastures(
     const pid = pastureId.get(o.pasture);
     if (pid == null) throw new Error(`seed observation references unknown pasture ${o.pasture}`);
     await db`
-      INSERT INTO pasture_observations (pasture_id, observed_on, category, note, action_due)
+      INSERT INTO pasture_observations (pasture_id, observed_on, category, note, action_due, operation_id)
       VALUES (${pid}, ${daysFromNow(o.observed)}, ${o.category}, ${o.note},
-              ${o.action_due !== undefined ? daysFromNow(o.action_due) : null})`;
+              ${o.action_due !== undefined ? daysFromNow(o.action_due) : null}, ${seedOperationId})`;
   }
 
   return { pastures: PASTURES.length, assignments, grazing, observations: OBSERVATIONS.length };
@@ -560,7 +567,7 @@ async function seedPastures(
 // the already-inserted rows and skips them, so counts stay flat and nothing is
 // duplicated even after the seeded dates roll into a fresh month.
 type ExpenseSeed = {
-  category: "feed" | "vet_health" | "maintenance" | "insurance" | "other";
+  category: "hay_feed" | "veterinary" | "repairs_maintenance" | "insurance" | "other";
   day: number; // day-of-month (clamped to the current month & today)
   amount_cents: number;
   vendor: string;
@@ -572,19 +579,19 @@ type ExpenseSeed = {
 };
 const EXPENSES: ExpenseSeed[] = [
   // Feed — attributed to herd groups, pasture, and the "Feeding" job.
-  { category: "feed", day: 5, amount_cents: 124000, vendor: "Chappell Feed & Seed", group: "North Cowherd", pasture: "North River Pasture", job: "Feeding", notes: "20% range cubes + fly-control mineral for the cowherd." },
-  { category: "feed", day: 12, amount_cents: 72000, vendor: "Atwood Farm Store", group: "Ewe Flock", pasture: "Lambing Ground", job: "Feeding", notes: "12% sweet feed flushing the ewes." },
-  { category: "feed", day: 18, amount_cents: 58500, vendor: "Atwood Farm Store", group: "Browse Crew", pasture: "South Ridge Pasture", job: "Feeding", notes: "Copper-safe sheep & goat mineral top-ups." },
+  { category: "hay_feed", day: 5, amount_cents: 124000, vendor: "Chappell Feed & Seed", group: "North Cowherd", pasture: "North River Pasture", job: "Feeding", notes: "20% range cubes + fly-control mineral for the cowherd." },
+  { category: "hay_feed", day: 12, amount_cents: 72000, vendor: "Atwood Farm Store", group: "Ewe Flock", pasture: "Lambing Ground", job: "Feeding", notes: "12% sweet feed flushing the ewes." },
+  { category: "hay_feed", day: 18, amount_cents: 58500, vendor: "Atwood Farm Store", group: "Browse Crew", pasture: "South Ridge Pasture", job: "Feeding", notes: "Copper-safe sheep & goat mineral top-ups." },
   // Vet & health — attributed to herd groups and a vet vendor.
-  { category: "vet_health", day: 7, amount_cents: 235000, vendor: "Cross Timbers Vet", group: "North Cowherd", pasture: "North River Pasture", job: "Vaccination", notes: "Spring blackleg + respiratory vaccine, pour-on fly control." },
-  { category: "vet_health", day: 20, amount_cents: 6400, vendor: "Cross Timbers Vet", group: "Ewe Flock", pasture: "Lambing Ground", job: "Hoof care", notes: "Sheep footbath + hoof trimming walk-through." },
-  { category: "vet_health", day: 24, amount_cents: 9400, vendor: "Rural Vet Supply", group: "Browse Crew", pasture: "South Ridge Pasture", job: "Health check", notes: "CD-T booster for the goat kids." },
+  { category: "veterinary", day: 7, amount_cents: 235000, vendor: "Cross Timbers Vet", group: "North Cowherd", pasture: "North River Pasture", job: "Vaccination", notes: "Spring blackleg + respiratory vaccine, pour-on fly control." },
+  { category: "veterinary", day: 20, amount_cents: 6400, vendor: "Cross Timbers Vet", group: "Ewe Flock", pasture: "Lambing Ground", job: "Hoof care", notes: "Sheep footbath + hoof trimming walk-through." },
+  { category: "veterinary", day: 24, amount_cents: 9400, vendor: "Rural Vet Supply", group: "Browse Crew", pasture: "South Ridge Pasture", job: "Health check", notes: "CD-T booster for the goat kids." },
   // Maintenance — attributed to an equipment asset + vendor. This is the
   // ledger representation of repair/parts spend (distinct from the operational
   // maintenance_records log; the dashboard maintenance figure reads expenses).
-  { category: "maintenance", day: 9, amount_cents: 128500, vendor: "Prairie Implement", equipment: "John Deere 8320R", job: "Repair", notes: "Hydraulic pump service + engine oil & filters." },
-  { category: "maintenance", day: 22, amount_cents: 16700, vendor: "Main shop", equipment: "Chevy Silverado 2500", job: "Repair", notes: "Front brake rotor + pad replacement." },
-  { category: "maintenance", day: 15, amount_cents: 6100, vendor: "Ag Service Co.", equipment: "John Deere 568 Baler", job: "Scheduled service", notes: "Knotter / twine-arm pre-cutting service." },
+  { category: "repairs_maintenance", day: 9, amount_cents: 128500, vendor: "Prairie Implement", equipment: "John Deere 8320R", job: "Repair", notes: "Hydraulic pump service + engine oil & filters." },
+  { category: "repairs_maintenance", day: 22, amount_cents: 16700, vendor: "Main shop", equipment: "Chevy Silverado 2500", job: "Repair", notes: "Front brake rotor + pad replacement." },
+  { category: "repairs_maintenance", day: 15, amount_cents: 6100, vendor: "Ag Service Co.", equipment: "John Deere 568 Baler", job: "Scheduled service", notes: "Knotter / twine-arm pre-cutting service." },
   // Insurance — a monthly insurance line (annual premium spread monthly).
   { category: "insurance", day: 3, amount_cents: 289000, vendor: "T Bar T Insurance", job: "Annual premium", notes: "Property + liability + auto package, monthly portion." },
   { category: "insurance", day: 3, amount_cents: 72000, vendor: "T Bar T Insurance", job: "Equipment coverage", notes: "Fleet & equipment floater, monthly portion." },
@@ -611,9 +618,9 @@ async function seedExpenses(db: ReturnType<typeof sql>): Promise<number> {
       LIMIT 1`;
     if (existing.length) continue;
     await db`
-      INSERT INTO expenses (expense_date, category, amount_cents, vendor, herd_group_id, pasture_id, equipment_id, job, notes)
+      INSERT INTO expenses (expense_date, category, amount_cents, vendor, herd_group_id, pasture_id, equipment_id, job, notes, operation_id)
       VALUES (${monthDay(x.day)}, ${x.category}, ${x.amount_cents}, ${x.vendor},
-              ${groupId}, ${pastureId}, ${equipId}, ${x.job ?? null}, ${x.notes ?? null})`;
+              ${groupId}, ${pastureId}, ${equipId}, ${x.job ?? null}, ${x.notes ?? null}, ${seedOperationId})`;
     inserted += 1;
   }
   return inserted;
@@ -659,10 +666,10 @@ async function seedEmployees(db: ReturnType<typeof sql>): Promise<number> {
     if (existing.length) continue;
     await db`
       INSERT INTO employees (name, role, pay_type, wage_rate, hours, salary_amount,
-                             contract_amount, crew, hire_date, contact, job, herd_group_id, notes)
+                             contract_amount, crew, hire_date, contact, job, herd_group_id, notes, operation_id)
       VALUES (${e.name}, ${e.role}, ${e.pay_type}, ${e.wage_rate ?? null}, ${e.hours ?? null},
               ${e.salary_amount ?? null}, ${e.contract_amount ?? null}, ${e.crew}, ${e.hire_date},
-              ${e.contact}, ${e.job}, ${groupId}, ${e.notes ?? null})`;
+              ${e.contact}, ${e.job}, ${groupId}, ${e.notes ?? null}, ${seedOperationId})`;
     inserted += 1;
   }
   return inserted;
@@ -705,17 +712,25 @@ async function seedTaxExemptions(db: ReturnType<typeof sql>): Promise<number> {
       LIMIT 1`;
     if (existing.length) continue;
     await db`
-      INSERT INTO tax_exemptions (identifier_type, identifier_number, jurisdiction, entity, expires_on, contact, notes)
+      INSERT INTO tax_exemptions (identifier_type, identifier_number, jurisdiction, entity, expires_on, contact, notes, operation_id)
       VALUES (${x.identifier_type}, ${x.identifier_number}, ${x.jurisdiction}, ${x.entity ?? null},
               ${x.expires_in_days !== undefined ? daysFromNow(x.expires_in_days) : null},
-              ${x.contact ?? null}, ${x.notes ?? null})`;
+              ${x.contact ?? null}, ${x.notes ?? null}, ${seedOperationId})`;
     inserted += 1;
   }
   return inserted;
 }
 
 async function seed(): Promise<void> {
-  const db = sql();
+  const db = rawSql();
+
+  // Migrations 0013+ scope every module table to an operation. The seed backs
+  // all of its rows onto the default operation — the single-tenant scope today.
+  const [ranchRow] = await db<[{ id: number }]>`
+    SELECT id FROM operations ORDER BY id LIMIT 1`;
+  if (!ranchRow) throw new Error("seed requires an operations row (run migrations first)");
+  const ranchId = ranchRow.id;
+  seedOperationId = ranchId;
 
   // Idempotent + non-destructive seeding. Master rows (herd_groups by name,
   // animals by tag_number, hay by field_or_source, feed by name, pastures by
@@ -733,7 +748,7 @@ async function seed(): Promise<void> {
     let id = await findId(db, "herd_groups", "name", g.name);
     if (id == null) {
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO herd_groups (name, species, notes) VALUES (${g.name}, ${g.species}, ${g.notes})
+        INSERT INTO herd_groups (name, species, notes, operation_id) VALUES (${g.name}, ${g.species}, ${g.notes}, ${ranchId})
         RETURNING id`;
       id = row.id;
     }
@@ -743,12 +758,8 @@ async function seed(): Promise<void> {
   // ---- Animals (0001) ----
   const idByTag = new Map<string, number>();
   const animalIds: number[] = [];
-  // Migration 0013 requires a ranch/operation on every animal. The seed backs
-  // its rows onto the default operation — the single-tenant scope today.
-  const [ranchRow] = await db<[{ id: number }]>`
-    SELECT id FROM operations ORDER BY id LIMIT 1`;
-  if (!ranchRow) throw new Error("seed requires an operations row (run migrations first)");
-  const ranchId = ranchRow.id;
+  // Migration 0013 requires a ranch/operation on every animal (ranch_id,
+  // resolved once at the top of seed()).
   for (const a of ANIMALS) {
     let id = await findId(db, "animals", "tag_number", a.tag_number!);
     if (id == null) {
@@ -782,9 +793,9 @@ async function seed(): Promise<void> {
     let id = await findId(db, "hay_inventory", "field_or_source", h.field_or_source);
     if (id == null) {
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO hay_inventory (feed_type, cutting, field_or_source, storage_location, quantity, unit, bale_weight_lbs, date_acquired, low_stock_threshold, notes)
+        INSERT INTO hay_inventory (feed_type, cutting, field_or_source, storage_location, quantity, unit, bale_weight_lbs, date_acquired, low_stock_threshold, notes, operation_id)
         VALUES (${h.feed_type}, ${h.cutting}, ${h.field_or_source}, ${h.storage_location}, ${h.quantity},
-                ${h.unit}, ${h.bale_weight_lbs ?? null}, ${daysFromNow(h.acquired)}, ${h.low_stock_threshold}, ${h.notes ?? null})
+                ${h.unit}, ${h.bale_weight_lbs ?? null}, ${daysFromNow(h.acquired)}, ${h.low_stock_threshold}, ${h.notes ?? null}, ${ranchId})
         RETURNING id`;
       id = row.id;
     }
@@ -796,9 +807,9 @@ async function seed(): Promise<void> {
     let id = await findId(db, "feed_inventory", "name", f.name);
     if (id == null) {
       const [row] = await db<[{ id: number }]>`
-        INSERT INTO feed_inventory (name, category, quantity, unit, supplier, unit_cost_cents, low_stock_threshold, notes)
+        INSERT INTO feed_inventory (name, category, quantity, unit, supplier, unit_cost_cents, low_stock_threshold, notes, operation_id)
         VALUES (${f.name}, ${f.category}, ${f.quantity}, ${f.unit}, ${f.supplier ?? null},
-                ${f.unit_cost_cents ?? null}, ${f.low_stock_threshold}, ${f.notes ?? null})
+                ${f.unit_cost_cents ?? null}, ${f.low_stock_threshold}, ${f.notes ?? null}, ${ranchId})
         RETURNING id`;
       id = row.id;
     }

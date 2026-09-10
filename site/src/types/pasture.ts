@@ -13,15 +13,55 @@ export type GrazeStatus = (typeof GRAZE_STATUSES)[number];
 export const OBSERVATION_CATEGORIES = ["forage", "water", "fence", "soil", "pest", "other"] as const;
 export type ObservationCategory = (typeof OBSERVATION_CATEGORIES)[number];
 
+/** Water availability on a paddock (default 'unknown'). */
+export const WATER_STATUSES = ["good", "needs_attention", "unavailable", "unknown"] as const;
+export type WaterStatus = (typeof WATER_STATUSES)[number];
+
+/** Pasture condition (default 'good'). */
+export const PASTURE_CONDITIONS = ["excellent", "good", "fair", "poor", "resting"] as const;
+export type PastureCondition = (typeof PASTURE_CONDITIONS)[number];
+
+/** Kinds of pasture work an activity record can carry (10 types). */
+export const ACTIVITY_TYPES = [
+  "fencing",
+  "water_system",
+  "mowing",
+  "fertilizing",
+  "spraying",
+  "reseeding",
+  "mineral_salt",
+  "repair",
+  "inspection",
+  "other",
+] as const;
+export type ActivityType = (typeof ACTIVITY_TYPES)[number];
+
+export const ACTIVITY_TYPE_LABEL: Record<ActivityType, string> = {
+  fencing: "Fencing",
+  water_system: "Water system",
+  mowing: "Mowing / clipping",
+  fertilizing: "Fertilizing",
+  spraying: "Spraying",
+  reseeding: "Reseeding / frost seed",
+  mineral_salt: "Mineral / salt",
+  repair: "Repair",
+  inspection: "Inspection",
+  other: "Other",
+};
+
 export const SPECIES = ["cattle", "horse", "goat", "sheep"] as const;
 export type Species = (typeof SPECIES)[number];
 
 export type Pasture = {
   id: number;
   name: string;
-  size_acres: number;
+  size_acres: number | null; // optional; >0 when present
   location: string | null;
   status: PastureStatus;
+  pasture_type: string | null; // free-text use (hay ground, native, trap…)
+  capacity_heads: number | null; // NULL or >= 0
+  water_status: WaterStatus;
+  condition: PastureCondition;
   soil_type: string | null;
   notes: string | null;
   created_at: string;
@@ -59,6 +99,32 @@ export type PastureObservation = {
   action_due: string | null;
 };
 
+/** A record of work done on a pasture — optionally carries cost and (when the
+ * operator asked) creates ONE linked land/pasture expense. */
+export type PastureActivity = {
+  id: number;
+  pasture_id: number;
+  activity_date: string; // YYYY-MM-DD
+  activity_type: ActivityType;
+  cost_cents: number | null; // NULL or >= 0
+  notes: string | null;
+  created_at: string;
+};
+
+/** A group-based livestock move between paddocks. from_pasture_id is NULL
+ * when the group came from off-pasture/unknown. */
+export type LivestockMovement = {
+  id: number;
+  from_pasture_id: number | null;
+  to_pasture_id: number;
+  move_date: string; // YYYY-MM-DD
+  herd_group_id: number | null;
+  herd_group_name: string | null;
+  head_count: number | null; // NULL or >= 0
+  notes: string | null;
+  created_at: string;
+};
+
 export type HerdGroupRef = { id: number; name: string; species: string; notes: string | null };
 
 export type PastureData = {
@@ -68,5 +134,7 @@ export type PastureData = {
   assignments: PastureAssignment[];
   grazing: GrazingDay[]; // most recent first
   observations: PastureObservation[];
+  activities: PastureActivity[]; // most recent first
+  movements: LivestockMovement[]; // most recent first
   groups: HerdGroupRef[];
 };

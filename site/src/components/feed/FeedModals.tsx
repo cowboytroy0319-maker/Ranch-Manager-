@@ -1,11 +1,17 @@
 // ============================================================================
-// Ranch Manager Pro — Hay & Feed modals (hay form, feed form, log-usage form).
-// Plain controlled forms; Tailwind stone/green language — same patterns as the
-// livestock module's modals.
+// Ranch Manager Pro — Hay & Feed modals (hay form, feed form, log-usage form,
+// restock form). Plain controlled forms; Tailwind stone/green language — same
+// patterns as the livestock module's modals.
+//
+// Restock is a separate, dedicated action from Edit: it appends quantity and
+// (optionally) records a linked expense through the idempotent restockItem
+// server fn. The client_request_id is generated ONCE per form-open (in a
+// useState initializer) and re-sent unchanged on every retry so double-taps
+// never double-apply inventory or create a second expense.
 // ============================================================================
 import { useState } from "react";
 import { Card } from "~/components/ui";
-import { logUsage, saveFeedItem, saveHay, type FeedItemInput, type HayInput } from "~/server/feed";
+import { logUsage, restockItem, saveFeedItem, saveHay, type FeedItemInput, type HayInput } from "~/server/feed";
 import {
   FEED_CATEGORIES,
   FEED_UNITS,
@@ -16,6 +22,7 @@ import {
   type HayItem,
   type HerdGroupRef,
 } from "~/types/feed";
+import { buildRestockSubmit, newClientRequestId, restockResultMessage } from "./restockUI";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -500,4 +507,162 @@ export function LogUsageModal({
 export function hayLabel(h: HayItem): string {
   const source = h.field_or_source ? ` — ${h.field_or_source}` : "";
   return `${cap(h.feed_type)}${h.cutting ? `, ${h.cutting} cutting` : ""}${source}`;
+}
+
+// ---------------------------------------------------------------------------
+// Restock — a DEDICATED action (never the edit form): appends quantity to an
+// existing hay/feed item and optionally records a linked hay_feed expense.
+// Idempotent: client_request_id is generated once per form-open and reused on
+// every retry/double-tap; the server dedupes on it.
+// ---------------------------------------------------------------------------
+
+export function RestockModal({
+  hay,
+  feed,
+  preselect,
+  onClose,
+  onSaved,
+}: {
+  hay: HayItem[];
+  feed: FeedItem[];
+  preselect: { kind: "hay" | "feed"; id: number } | null;
+  onClose: () => void;
+  /** Called with the exact user-facing outcome message. */
+  onSaved: (message: string) => void;
+}) {
+  const [itemKind, setItemKind] = useState<"hay" | "feed">(preselect?.kind ?? "hay");
+  const items = itemKind === "hay" ? hay : feed;
+  const [itemId, setItemId] = useState<number | null>(preselect?.id ?? items[0]?.id ?? null);
+  const [quantity, setQuantity] = useState<number | "">("");
+  const [restockDate, setRestockDate] = useState(today());
+  const [costDollars, setCostDollars] = useState("");
+  const [vendor, setVendor] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // ONE idempotency key per form-open. Never regenerated on retry.
+  const [clientRequestId] = useState(() => newClientRequestId());
+
+  const selected = items.find((x) => x.id === itemId) ?? null;
+  const unit = selected?.unit ?? "";
+
+  const switchKind = (kind: "hay" | "feed") => {
+    setItemKind(kind);
+    const next = kind === "hay" ? hay : feed;
+    setItemId(next[0]?.id ?? null);
+    setQuantity("");
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selected || quantity === "" || Number(quantity) <= 0) {
+      setError("Pick an item and a quantity greater than zero.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const cents =
+      costDollars.trim() === "" ? null : Math.round(Number(costDollars) * 100);
+    // Same clientRequestId on EVERY attempt (first send or retry).
+    const payload = buildRestockSubmit(
+      {
+        item_kind: itemKind,
+        item_id: selected.id,
+        quantity: Number(quantity),
+        unit: selected.unit,
+        restock_date: restockDate,
+        total_cost_cents: cents != null && Number.isFinite(cents) && cents > 0 ? cents : null,
+        vendor: vendor.trim() ? vendor.trim() : null,
+        notes: notes.trim() ? notes.trim() : null,
+      },
+      clientRequestId
+    );
+    const res = await restockItem({ data: payload });
+    if (res.ok) {
+      onSaved(restockResultMessage(res).text);
+    } else {
+      setSaving(false);
+      setError(res.error);
+    }
+  };
+
+  return (
+    <Modal
+      title="Restock hay / feed"
+      sub="Adds quantity on hand — with a cost, it also records the linked expense"
+      onClose={onClose}
+      footer={
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 sm:w-auto sm:px-5">
+            Cancel
+          </button>
+          <button type="submit" form="restock-form" disabled={saving || !selected} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-green-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-900 disabled:opacity-60 sm:w-auto sm:px-5">
+            {saving ? "Saving…" : "Save restock"}
+          </button>
+        </div>
+      }
+    >
+      <form id="restock-form" onSubmit={submit} className="space-y-4">
+        {error && <ErrorNote error={error} />}
+        <Field label="Item type">
+          <div className="grid grid-cols-2 gap-2" role="group" aria-label="Item type">
+            {(["hay", "feed"] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => switchKind(k)}
+                aria-pressed={itemKind === k}
+                className={`min-h-11 rounded-lg border px-3 py-2.5 text-sm font-semibold transition ${itemKind === k ? "border-green-700 bg-green-800 text-white" : "border-stone-300 bg-white text-stone-700"}`}
+              >
+                {k === "hay" ? "Hay" : "Feed"}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <Field label="Item *">
+          <select className={inputCls} value={itemId ?? ""} onChange={(e) => { setItemId(e.target.value ? Number(e.target.value) : null); setQuantity(""); }}>
+            <option value="">— pick an item —</option>
+            {items.map((x) => (
+              <option key={x.id} value={x.id}>
+                {(itemKind === "hay" ? hayLabel(x as HayItem) : (x as FeedItem).name)} — {fmtQty(x.quantity, x.unit)} on hand
+              </option>
+            ))}
+          </select>
+        </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label={`Quantity added${unit ? ` (${unit})` : ""} *`}>
+            <input
+              type="number" min={0} step={unit === "tons" ? 0.1 : 1}
+              inputMode={unit === "tons" ? "decimal" : "numeric"}
+              className={inputCls}
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value === "" ? "" : Number(e.target.value))}
+              required
+            />
+            {selected && <p className="mt-1 text-xs text-stone-500">{fmtQty(selected.quantity, selected.unit)} on hand now · counted in {unit || "—"}</p>}
+          </Field>
+          <Field label="Restock date *">
+            <input type="date" className={inputCls} value={restockDate} onChange={(e) => setRestockDate(e.target.value)} required />
+          </Field>
+          <Field label="Total cost ($)">
+            <input
+              type="number" min={0} step={0.01}
+              inputMode="decimal"
+              className={inputCls}
+              value={costDollars}
+              onChange={(e) => setCostDollars(e.target.value)}
+              placeholder="0.00"
+            />
+            <p className="mt-1 text-xs text-stone-500">Optional — with a cost, a Hay &amp; feed expense is recorded and linked to this restock.</p>
+          </Field>
+          <Field label="Vendor">
+            <input className={inputCls} value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="Mule Shoe Dairy…" />
+          </Field>
+        </div>
+        <Field label="Notes">
+          <textarea className={inputCls} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery, quality, stack location…" />
+        </Field>
+      </form>
+    </Modal>
+  );
 }

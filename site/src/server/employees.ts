@@ -204,7 +204,10 @@ export const getEmployeesData = createServerFn().handler(async (): Promise<Emplo
 export const saveEmployee = createServerFn({ method: "POST" })
   .validator(parseEmployeeInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -246,7 +249,10 @@ const parseDeleteInput = (raw: unknown): { id: number } => {
 export const deleteEmployee = createServerFn({ method: "POST" })
   .validator(parseDeleteInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();

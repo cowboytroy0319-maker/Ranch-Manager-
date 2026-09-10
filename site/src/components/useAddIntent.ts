@@ -1,11 +1,16 @@
 // ============================================================================
 // Ranch Manager Pro — shared hook that turns a ?add=... query param into an
 // "open create flow" intent. Used by every protected module route so a Quick
-// Add bottom-nav link (e.g. /feed?add=hay) lands straight on the working
-// create modal on the phone.
+// Add bottom-nav link (e.g. /expenses?add=expense) lands straight on the
+// working create modal on the phone.
+//
+// Implementation note: the fired intent is STATE (not a ref) — setting it must
+// re-render, or the consumer never sees the intent and the modal never opens.
+// The query param is cleared on demand via clear() so a reload/back-nav
+// doesn't re-open the modal.
 // ============================================================================
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 
 export function useAddIntent<T extends string>(
   possible: readonly T[]
@@ -14,23 +19,23 @@ export function useAddIntent<T extends string>(
   const search = useSearch({ strict: false });
   const raw = (search as Record<string, unknown>)?.add;
   const add = typeof raw === "string" && (possible as readonly string[]).includes(raw) ? (raw as T) : null;
-  const fired = useRef<T | null>(null);
+  const [fired, setFired] = useState<T | null>(null);
 
-  // Fire once per intent value; then clear the query so a reload doesn't
-  // re-open the modal and the URL stays shareable/clean.
+  // Raise the intent once per param value (state change re-renders so the
+  // consumer actually receives it).
   useEffect(() => {
     if (!add) return;
-    if (fired.current === add) return;
-    fired.current = add;
-  }, [add]);
+    if (fired === add) return;
+    setFired(add);
+  }, [add, fired]);
 
   const clear = () => {
-    fired.current = null;
+    setFired(null);
     void navigate({ search: (prev) => {
       const { add: _drop, ...rest } = (prev as Record<string, unknown>) ?? {};
       return rest as never;
     }, replace: true });
   };
 
-  return { add: fired.current === add ? add : null, clear };
+  return { add: fired === add ? add : null, clear };
 }

@@ -156,7 +156,10 @@ export function parseEquipmentInput(raw: unknown): EquipmentInput {
 export const saveEquipment = createServerFn({ method: "POST" })
   .validator(parseEquipmentInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -224,7 +227,10 @@ export function parseFuelLogInput(raw: unknown): FuelLogInput {
 export const logFuel = createServerFn({ method: "POST" })
   .validator(parseFuelLogInput)
   .handler(async ({ data: f }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -285,7 +291,10 @@ export function parseMaintLogInput(raw: unknown): MaintLogInput {
 export const logMaintenance = createServerFn({ method: "POST" })
   .validator(parseMaintLogInput)
   .handler(async ({ data: m }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();

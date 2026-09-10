@@ -186,10 +186,17 @@ export async function commitLivestockImportCore(input: CommitInput): Promise<Com
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // The db-layer guard (src/dbErrors.ts) rewrites user-facing err.message to
+    // a customer-safe form but preserves `.code` (SQLSTATE) and `.rawDbMessage`
+    // (original technical text, server-side only) — classify on those so the
+    // actionable story below still reaches the owner.
+    const raw =
+      err instanceof Error ? ((err as { rawDbMessage?: string }).rawDbMessage ?? msg) : msg;
+    const code = (err as { code?: string | undefined }).code;
     // Tag uniqueness race (another import landed between parse and commit) is
     // the overwhelmingly likely failure; give the owner the actionable, honest
     // story instead of a raw constraint leak.
-    if (/animals_ranch_tag_uniq|duplicate/i.test(msg)) {
+    if (code === "23505" || /animals_ranch_tag_uniq|duplicate/i.test(raw)) {
       return {
         ok: false,
         error:
@@ -293,7 +300,10 @@ export interface CommitInputData {
 
 /** Commit core — owner-only + transactional. */
 export async function importLivestockCommitCore(data: CommitInputData): Promise<LivestockImportResult> {
-  if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+  if (!isDatabaseConfigured()) {
+    console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+    return { ok: false, error: "We couldn't complete that right now. Please try again." };
+  }
   try {
     const auth = await requireAuth();
     if (auth.role !== "owner") {

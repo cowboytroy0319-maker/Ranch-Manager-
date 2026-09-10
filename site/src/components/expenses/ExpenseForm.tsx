@@ -33,13 +33,14 @@ export function ExpenseFormModal({
   const [form, setForm] = useState<ExpenseInput>({
     id: editing?.id,
     expense_date: editing?.expense_date ?? today(),
-    category: editing?.category ?? "feed",
+    category: editing?.category ?? "hay_feed",
     amount_cents: editing?.amount_cents ?? 0,
     vendor: editing?.vendor ?? "",
     herd_group_id: editing?.herd_group_id ?? null,
     pasture_id: editing?.pasture_id ?? null,
     equipment_id: editing?.equipment_id ?? null,
     job: editing?.job ?? "",
+    paid_by: editing?.paid_by ?? "",
     notes: editing?.notes ?? "",
   });
   const [amountDollars, setAmountDollars] = useState(
@@ -109,8 +110,11 @@ export function ExpenseFormModal({
               required
             />
           </LabeledField>
-          <LabeledField label="Vendor">
-            <input className={sheetInputCls} value={form.vendor ?? ""} onChange={(e) => set("vendor", e.target.value)} placeholder="Chappell Feed & Seed" />
+          <LabeledField label="Payee / description *">
+            <input className={sheetInputCls} value={form.vendor ?? ""} onChange={(e) => set("vendor", e.target.value)} placeholder="Chappell Feed & Seed" required />
+          </LabeledField>
+          <LabeledField label="Paid by">
+            <input className={sheetInputCls} value={form.paid_by ?? ""} onChange={(e) => set("paid_by", e.target.value)} placeholder="T Bar T, partner, cardholder…" />
           </LabeledField>
           <LabeledField label="Herd / group">
             <select className={sheetInputCls} value={form.herd_group_id ?? ""} onChange={(e) => set("herd_group_id", e.target.value ? Number(e.target.value) : null)}>

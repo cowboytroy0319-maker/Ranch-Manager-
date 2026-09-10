@@ -36,9 +36,9 @@ export function CostsSnapshot({ data, expenses }: { data: CostData; expenses: Ex
       {/* Current-month headline */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <Stat label={`Fuel — ${fuel?.month ?? "this month"}`} value={fuel ? fmt(fuel.totalCents) : "—"} sub={`${fuel?.totalEntries ?? 0} fill-ups, ${(fuel?.gallons ?? 0).toLocaleString()} gal`} accent />
-        <Stat label="Feed & Hay" value={hasExpenses ? fmt(cat("feed")) : "—"} sub={hasExpenses ? sub("feed") : "no expenses"} />
-        <Stat label="Vet & Health" value={hasExpenses ? fmt(cat("vet_health")) : "—"} sub={hasExpenses ? sub("vet_health") : "no expenses"} />
-        <Stat label="Maintenance" value={hasExpenses ? fmt(cat("maintenance")) : "—"} sub={hasExpenses ? sub("maintenance") : "no expenses"} />
+        <Stat label="Feed & Hay" value={hasExpenses ? fmt(cat("hay_feed")) : "—"} sub={hasExpenses ? sub("hay_feed") : "no expenses"} />
+        <Stat label="Vet & Health" value={hasExpenses ? fmt(cat("veterinary")) : "—"} sub={hasExpenses ? sub("veterinary") : "no expenses"} />
+        <Stat label="Repairs & Maint." value={hasExpenses ? fmt(cat("repairs_maintenance")) : "—"} sub={hasExpenses ? sub("repairs_maintenance") : "no expenses"} />
         <Stat label="Insurance" value={hasExpenses ? fmt(cat("insurance")) : "—"} sub={hasExpenses ? sub("insurance") : "no expenses"} />
       </div>
       <div className="grid gap-5 lg:grid-cols-5">

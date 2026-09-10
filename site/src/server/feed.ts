@@ -224,7 +224,10 @@ function parseUsageInput(raw: unknown): UsageInput {
 export const saveHay = createServerFn({ method: "POST" })
   .validator(parseHayInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -259,7 +262,10 @@ export const saveHay = createServerFn({ method: "POST" })
 export const saveFeedItem = createServerFn({ method: "POST" })
   .validator(parseFeedItemInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -292,7 +298,10 @@ export const saveFeedItem = createServerFn({ method: "POST" })
 export const logUsage = createServerFn({ method: "POST" })
   .validator(parseUsageInput)
   .handler(async ({ data }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -337,3 +346,411 @@ export const logUsage = createServerFn({ method: "POST" })
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
+
+// ---------------------------------------------------------------------------
+// Write: hay/feed RESTOCK — adds inventory and (optionally) records ONE linked
+// expense, all in one transaction. Idempotent PER OPERATION (ranch) via
+// client_request_id: a double-tap / retry / refresh by the same ranch never
+// adds the same stock twice or creates a duplicate expense (the DB backstops
+// are the named composite unique uq_restock_log_operation_request on
+// (operation_id, client_request_id) and expenses_source_once_uniq for
+// exactly-once expenses). Two different ranches may reuse the same
+// client_request_id — uniqueness is never global. Category for the linked
+// expense is 'hay_feed'; source_type is 'restock'; source_id is the
+// restock_log row.
+// ---------------------------------------------------------------------------
+
+export type RestockInput = {
+  client_request_id: string;
+  item_kind: "hay" | "feed";
+  item_id: number;
+  quantity: number;
+  unit: string;
+  restock_date: string;
+  total_cost_cents: number | null;
+  vendor: string | null;
+  notes: string | null;
+};
+
+export function parseRestockInput(raw: unknown): RestockInput {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const client_request_id = str(d.client_request_id);
+  if (!client_request_id) throw new Error("A request id is required — try again.");
+  if (client_request_id.length > 200) throw new Error("Request id is too long.");
+  const item_kind = oneOf(d.item_kind, ["hay", "feed"] as const);
+  if (!item_kind) throw new Error("Pick whether this restock is hay or feed.");
+  const item_id = optionalInt(d.item_id);
+  if (!item_id || item_id <= 0) throw new Error("Pick an inventory item to restock.");
+  const restock_date = isoDate(d.restock_date);
+  if (!restock_date) throw new Error("Restock date is required.");
+  const quantity = num(d.quantity, "Quantity added", { min: 0 });
+  if (quantity <= 0) throw new Error("Quantity added must be greater than zero.");
+  let total_cost_cents = optionalInt(d.total_cost_cents);
+  if (total_cost_cents !== null && total_cost_cents < 0) {
+    throw new Error("Total cost can't be negative.");
+  }
+  // A blank/empty/"0" cost means "no expense" (inventory only).
+  if (d.total_cost_cents === "" || d.total_cost_cents === null || d.total_cost_cents === undefined || Number(d.total_cost_cents) === 0) {
+    total_cost_cents = null;
+  }
+  return {
+    client_request_id,
+    item_kind,
+    item_id,
+    quantity,
+    unit: str(d.unit) ?? "",
+    restock_date,
+    total_cost_cents,
+    vendor: str(d.vendor),
+    notes: str(d.notes),
+  };
+}
+
+export const restockItem = createServerFn({ method: "POST" })
+  .validator(parseRestockInput)
+  .handler(async ({ data: r }): Promise<
+    { ok: true; id: number; expense_created: boolean; duplicate: boolean } | { ok: false; error: string }
+  > => {
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
+    try {
+      const auth = await requireAuth();
+      return await restockItemCore(sql(), auth.operationId, r);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "We couldn't restock that item right now. Please try again." };
+    }
+  });
+
+/** Injectable restock core — the exact transaction restockItem runs. */
+export async function restockItemCore(
+  db: ReturnType<typeof sql>,
+  operationId: number,
+  r: RestockInput
+): Promise<{ ok: true; id: number; expense_created: boolean; duplicate: boolean } | { ok: false; error: string }> {
+  return await db.begin(async (tx) => {
+    // Idempotency: the SAME client_request_id for this operation returns the
+    // original row WITHOUT re-applying inventory or creating another expense.
+    // Per operation, never global — the DB constraint
+    // uq_restock_log_operation_request on (operation_id, client_request_id)
+    // matches this exact scoping and is the race backstop.
+    const prior = await tx<[{ id: number; total_cost_cents: number | null }]>`
+      SELECT id, total_cost_cents FROM restock_log
+      WHERE client_request_id = ${r.client_request_id} AND operation_id = ${operationId}`;
+    if (prior.length > 0) {
+      return {
+        ok: true,
+        id: prior[0].id,
+        expense_created: prior[0].total_cost_cents !== null && prior[0].total_cost_cents > 0,
+        duplicate: true,
+      };
+    }
+    // The unit is pinned to the item's own unit (restocking in bales can't
+    // silently restock tons). FOR UPDATE keeps the lock like logUsage.
+    if (r.item_kind === "hay") {
+      const [item] = await tx<[{ unit: string }]>`
+        SELECT unit FROM hay_inventory WHERE id=${r.item_id} AND operation_id=${operationId} FOR UPDATE`;
+      if (!item) return { ok: false, error: "That hay stack no longer exists." };
+      const [log] = await tx<[{ id: number }]>`
+        INSERT INTO restock_log (operation_id, item_kind, hay_item_id, quantity, unit,
+                                 restock_date, total_cost_cents, vendor, notes, client_request_id)
+        VALUES (${operationId}, 'hay', ${r.item_id}, ${r.quantity}, ${item.unit},
+                ${r.restock_date}, ${r.total_cost_cents}, ${r.vendor}, ${r.notes}, ${r.client_request_id})
+        RETURNING id`;
+      await tx`UPDATE hay_inventory SET quantity = quantity + ${r.quantity}, updated_at = now()
+        WHERE id=${r.item_id} AND operation_id=${operationId}`;
+      if (r.total_cost_cents !== null && r.total_cost_cents > 0) {
+        await insertLinkedExpense(tx, operationId, {
+          category: "hay_feed",
+          expense_date: r.restock_date,
+          amount_cents: r.total_cost_cents,
+          vendor: r.vendor,
+          notes: r.notes ? `Hay restock — ${r.notes}` : "Hay restock",
+          source_type: "restock",
+          source_id: log.id,
+        });
+      }
+      return { ok: true, id: log.id, expense_created: r.total_cost_cents !== null && r.total_cost_cents > 0, duplicate: false };
+    }
+    const [item] = await tx<[{ unit: string }]>`
+      SELECT unit FROM feed_inventory WHERE id=${r.item_id} AND operation_id=${operationId} FOR UPDATE`;
+    if (!item) return { ok: false, error: "That feed item no longer exists." };
+    const [log] = await tx<[{ id: number }]>`
+      INSERT INTO restock_log (operation_id, item_kind, feed_item_id, quantity, unit,
+                               restock_date, total_cost_cents, vendor, notes, client_request_id)
+      VALUES (${operationId}, 'feed', ${r.item_id}, ${r.quantity}, ${item.unit},
+              ${r.restock_date}, ${r.total_cost_cents}, ${r.vendor}, ${r.notes}, ${r.client_request_id})
+      RETURNING id`;
+    await tx`UPDATE feed_inventory SET quantity = quantity + ${r.quantity}, updated_at = now()
+      WHERE id=${r.item_id} AND operation_id=${operationId}`;
+    if (r.total_cost_cents !== null && r.total_cost_cents > 0) {
+      await insertLinkedExpense(tx, operationId, {
+        category: "hay_feed",
+        expense_date: r.restock_date,
+        amount_cents: r.total_cost_cents,
+        vendor: r.vendor,
+        notes: r.notes ? `Feed restock — ${r.notes}` : "Feed restock",
+        source_type: "restock",
+        source_id: log.id,
+      });
+    }
+    return { ok: true, id: log.id, expense_created: r.total_cost_cents !== null && r.total_cost_cents > 0, duplicate: false };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Write: edit a restock — recompute the inventory delta and upsert the linked
+// expense so history (and the ledger) always tells one consistent story.
+// ---------------------------------------------------------------------------
+
+export type RestockEditInput = {
+  id: number;
+  quantity: number;
+  unit: string;
+  restock_date: string;
+  total_cost_cents: number | null;
+  vendor: string | null;
+  notes: string | null;
+};
+
+export function parseRestockEditInput(raw: unknown): RestockEditInput {
+  const d = (raw ?? {}) as Record<string, unknown>;
+  const id = optionalInt(d.id);
+  if (!id || id <= 0) throw new Error("Pick the restock to edit.");
+  const restock_date = isoDate(d.restock_date);
+  if (!restock_date) throw new Error("Restock date is required.");
+  const quantity = num(d.quantity, "Quantity added", { min: 0 });
+  if (quantity <= 0) throw new Error("Quantity added must be greater than zero.");
+  let total_cost_cents = optionalInt(d.total_cost_cents);
+  if (total_cost_cents !== null && total_cost_cents < 0) throw new Error("Total cost can't be negative.");
+  if (d.total_cost_cents === "" || d.total_cost_cents === null || d.total_cost_cents === undefined || Number(d.total_cost_cents) === 0) {
+    total_cost_cents = null;
+  }
+  return {
+    id,
+    quantity,
+    unit: str(d.unit) ?? "",
+    restock_date,
+    total_cost_cents,
+    vendor: str(d.vendor),
+    notes: str(d.notes),
+  };
+}
+
+/** Owner rule (PR #4 review): never silently clamp inventory to zero. When an
+ *  edit or delete would push the on-hand count below zero, the whole correction
+ *  is refused — some units have already been used, so the book value is right
+ *  and the "correction" would be the error. */
+export const INVENTORY_BELOW_ZERO_ERROR =
+  "This correction would take the stock below zero — some units have already been used. Nothing was changed.";
+
+export const updateRestock = createServerFn({ method: "POST" })
+  .validator(parseRestockEditInput)
+  .handler(async ({ data: r }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
+    try {
+      const auth = await requireAuth();
+      return await updateRestockCore(sql(), auth.operationId, r);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "We couldn't update that restock right now. Please try again." };
+    }
+  });
+
+/** Injectable restock-edit core — recompute inventory delta + upsert expense
+ *  in one transaction (operation-scoped on every row it touches). */
+export async function updateRestockCore(
+  db: ReturnType<typeof sql>,
+  operationId: number,
+  r: RestockEditInput
+): Promise<{ ok: true; id: number } | { ok: false; error: string }> {
+  return await db.begin(async (tx) => {
+    const [log] = await tx<[{ item_kind: "hay" | "feed"; hay_item_id: number | null; feed_item_id: number | null; quantity: string; unit: string }]>`
+      SELECT item_kind, hay_item_id, feed_item_id, quantity, unit FROM restock_log
+      WHERE id=${r.id} AND operation_id=${operationId} FOR UPDATE`;
+    if (!log) return { ok: false, error: "That restock no longer exists." };
+    const itemId = log.item_kind === "hay" ? log.hay_item_id : log.feed_item_id;
+    if (!itemId) return { ok: false, error: "That restock's inventory item was deleted, so it can't be edited." };
+    const oldQty = Number(log.quantity);
+    const delta = r.quantity - oldQty;
+
+    // Inventory safety (owner rule): read the current level under a row lock and
+    // decide BEFORE any write, so a blocked edit applies nothing at all — no
+    // partial inventory, restock_log, or expense changes.
+    let current: number;
+    if (log.item_kind === "hay") {
+      const [inv] = await tx<[{ quantity: string }]>`SELECT quantity FROM hay_inventory
+        WHERE id=${itemId} AND operation_id=${operationId} FOR UPDATE`;
+      if (!inv) return { ok: false, error: "That restock's inventory item was deleted, so it can't be edited." };
+      current = Number(inv.quantity);
+    } else {
+      const [inv] = await tx<[{ quantity: string }]>`SELECT quantity FROM feed_inventory
+        WHERE id=${itemId} AND operation_id=${operationId} FOR UPDATE`;
+      if (!inv) return { ok: false, error: "That restock's inventory item was deleted, so it can't be edited." };
+      current = Number(inv.quantity);
+    }
+    if (current + delta < 0) {
+      return { ok: false, error: INVENTORY_BELOW_ZERO_ERROR };
+    }
+
+    await tx`
+      UPDATE restock_log SET quantity=${r.quantity}, unit=${r.unit}, restock_date=${r.restock_date},
+        total_cost_cents=${r.total_cost_cents}, vendor=${r.vendor}, notes=${r.notes}
+      WHERE id=${r.id} AND operation_id=${operationId}`;
+
+    // Exact arithmetic, no clamp — the pre-check above guarantees the new level stays >= 0.
+    if (log.item_kind === "hay") {
+      await tx`UPDATE hay_inventory SET quantity = quantity + ${delta}, updated_at = now()
+        WHERE id=${itemId} AND operation_id=${operationId}`;
+    } else {
+      await tx`UPDATE feed_inventory SET quantity = quantity + ${delta}, updated_at = now()
+        WHERE id=${itemId} AND operation_id=${operationId}`;
+    }
+
+    // Upsert the linked expense: cost now > 0 → INSERT or UPDATE the existing
+    // linked row (the unique index keeps exactly one); cost blank/0 → DELETE.
+    const linked = await tx<[{ id: number; amount_cents: number }]>`
+      SELECT id, amount_cents FROM expenses
+      WHERE source_type='restock' AND source_id=${r.id} AND operation_id=${operationId}`;
+    if (r.total_cost_cents !== null && r.total_cost_cents > 0) {
+      if (linked.length > 0) {
+        await tx`
+          UPDATE expenses SET expense_date=${r.restock_date}, amount_cents=${r.total_cost_cents},
+            vendor=${r.vendor}, notes=${r.notes ? `${log.item_kind === "hay" ? "Hay" : "Feed"} restock — ${r.notes}` : `${log.item_kind === "hay" ? "Hay" : "Feed"} restock`}
+          WHERE id=${linked[0].id} AND operation_id=${operationId}`;
+      } else {
+        await insertLinkedExpense(tx, operationId, {
+          category: "hay_feed",
+          expense_date: r.restock_date,
+          amount_cents: r.total_cost_cents,
+          vendor: r.vendor,
+          notes: r.notes ? `${log.item_kind === "hay" ? "Hay" : "Feed"} restock — ${r.notes}` : `${log.item_kind === "hay" ? "Hay" : "Feed"} restock`,
+          source_type: "restock",
+          source_id: r.id,
+        });
+      }
+    } else if (linked.length > 0) {
+      await tx`DELETE FROM expenses WHERE id=${linked[0].id} AND operation_id=${operationId}`;
+    }
+    return { ok: true, id: r.id };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Write: delete a restock — reverse the inventory, remove the linked expense,
+// then delete the restock row. One transaction, operation-scoped.
+// ---------------------------------------------------------------------------
+
+export const deleteRestock = createServerFn({ method: "POST" })
+  .validator((raw: unknown) => {
+    const id = Number((raw ?? null) as unknown);
+    if (!Number.isInteger(id) || id <= 0) throw new Error("Pick the restock to delete.");
+    return id;
+  })
+  .handler(async ({ data: id }): Promise<{ ok: true; linked_expense_removed: boolean } | { ok: false; error: string }> => {
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
+    try {
+      const auth = await requireAuth();
+      return await deleteRestockCore(sql(), auth.operationId, id);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "We couldn't delete that restock right now. Please try again." };
+    }
+  });
+
+/** Injectable restock-delete core — the exact transaction deleteRestock runs. */
+export async function deleteRestockCore(
+  db: ReturnType<typeof sql>,
+  operationId: number,
+  id: number
+): Promise<{ ok: true; linked_expense_removed: boolean } | { ok: false; error: string }> {
+  return await db.begin(async (tx) => {
+    const [log] = await tx<[{ item_kind: "hay" | "feed"; hay_item_id: number | null; feed_item_id: number | null; quantity: string }]>`
+      SELECT item_kind, hay_item_id, feed_item_id, quantity FROM restock_log
+      WHERE id=${id} AND operation_id=${operationId} FOR UPDATE`;
+    if (!log) return { ok: false, error: "That restock no longer exists." };
+    const itemId = log.item_kind === "hay" ? log.hay_item_id : log.feed_item_id;
+    const linked = await tx<[{ id: number }]>`
+      SELECT id FROM expenses WHERE source_type='restock' AND source_id=${id} AND operation_id=${operationId}`;
+    // DESIGN NOTE — audited inventory adjustments (owner-requested, NOT built
+    // here): blocking a reversal below zero means stock that was already fed out
+    // can't be un-recorded by deleting a restock. A future inventory-adjustment
+    // record would need: the adjustment date, a signed delta (units added or
+    // removed), a required reason (e.g. shrink, miscount, spoilage), and the
+    // operation scope — written as its own audited row (who/when/why, plus the
+    // resulting level) so the ledger stays explainable. No table or UI exists
+    // yet; until it does, corrections that would push stock below zero stay
+    // blocked with a plain-language message instead of being clamped.
+    if (itemId) {
+      let missing = false;
+      let current = 0;
+      if (log.item_kind === "hay") {
+        const [inv] = await tx<[{ quantity: string }]>`SELECT quantity FROM hay_inventory
+          WHERE id=${itemId} AND operation_id=${operationId} FOR UPDATE`;
+        if (!inv) missing = true;
+        else current = Number(inv.quantity);
+      } else {
+        const [inv] = await tx<[{ quantity: string }]>`SELECT quantity FROM feed_inventory
+          WHERE id=${itemId} AND operation_id=${operationId} FOR UPDATE`;
+        if (!inv) missing = true;
+        else current = Number(inv.quantity);
+      }
+      if (!missing) {
+        // Owner rule: never silently clamp. Decide BEFORE any write, so a blocked
+        // delete applies nothing — inventory, expense, and the log row all stay put.
+        if (current - Number(log.quantity) < 0) {
+          return { ok: false, error: INVENTORY_BELOW_ZERO_ERROR };
+        }
+        // Exact arithmetic, no clamp — the check above guarantees the new level stays >= 0.
+        if (log.item_kind === "hay") {
+          await tx`UPDATE hay_inventory SET quantity = quantity - ${Number(log.quantity)}, updated_at = now()
+            WHERE id=${itemId} AND operation_id=${operationId}`;
+        } else {
+          await tx`UPDATE feed_inventory SET quantity = quantity - ${Number(log.quantity)}, updated_at = now()
+            WHERE id=${itemId} AND operation_id=${operationId}`;
+        }
+      }
+    }
+    if (linked.length > 0) {
+      await tx`DELETE FROM expenses WHERE id=${linked[0].id} AND operation_id=${operationId}`;
+    }
+    await tx`DELETE FROM restock_log WHERE id=${id} AND operation_id=${operationId}`;
+    return { ok: true, linked_expense_removed: linked.length > 0 };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Shared linked-expense insert (used by restock + pasture activity cores).
+// The unique index expenses_source_once_uniq backs exactly-once — a duplicate
+// (source_type, source_id) would violate it, so one source can never fund two
+// ledger rows. Errors are logged server-side; callers surface safe messages.
+// ---------------------------------------------------------------------------
+
+/** A Postgres client inside a transaction (db.begin provides tx). */
+export type Tx = import("postgres").TransactionSql;
+
+export async function insertLinkedExpense(
+  tx: Tx,
+  operationId: number,
+  e: {
+    category: "hay_feed" | "land_pasture";
+    expense_date: string;
+    amount_cents: number;
+    vendor: string | null;
+    notes: string;
+    source_type: "restock" | "pasture_activity";
+    source_id: number;
+    pasture_id?: number | null;
+  }
+): Promise<void> {
+  await tx`
+    INSERT INTO expenses (operation_id, expense_date, category, amount_cents, vendor, notes,
+                          pasture_id, source_type, source_id)
+    VALUES (${operationId}, ${e.expense_date}, ${e.category}, ${e.amount_cents}, ${e.vendor}, ${e.notes},
+            ${e.pasture_id ?? null}, ${e.source_type}, ${e.source_id})`;
+}

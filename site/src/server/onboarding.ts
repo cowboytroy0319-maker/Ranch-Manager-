@@ -311,7 +311,10 @@ export const renameOperation = createServerFn({ method: "POST" })
     return { name };
   })
   .handler(async ({ data }): Promise<{ ok: true; data: OnboardingData } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -329,7 +332,10 @@ export const renameOperation = createServerFn({ method: "POST" })
 export const saveOnboarding = createServerFn({ method: "POST" })
   .validator(parseOnboardingInput)
   .handler(async ({ data: p }): Promise<{ ok: true; data: OnboardingData } | { ok: false; error: string }> => {
-    if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+    if (!isDatabaseConfigured()) {
+      console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+      return { ok: false, error: "We couldn't complete that right now. Please try again." };
+    }
     try {
       const auth = await requireAuth();
       const db = sql();
@@ -345,7 +351,10 @@ export const saveOnboarding = createServerFn({ method: "POST" })
 export const finishOnboarding = createServerFn({ method: "POST" }).handler(async (): Promise<
   { ok: true; setupDone: boolean } | { ok: false; error: string }
 > => {
-  if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+  if (!isDatabaseConfigured()) {
+    console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+    return { ok: false, error: "We couldn't complete that right now. Please try again." };
+  }
   try {
     const auth = await requireAuth();
     await finishOnboardingCore(sql(), auth.operationId);
@@ -360,7 +369,10 @@ export const finishOnboarding = createServerFn({ method: "POST" }).handler(async
 export const markTemplatesDownloaded = createServerFn({ method: "POST" }).handler(async (): Promise<
   { ok: true; templatesDownloaded: boolean } | { ok: false; error: string }
 > => {
-  if (!isDatabaseConfigured()) return { ok: false, error: "DATABASE_URL is not set — no database connected." };
+  if (!isDatabaseConfigured()) {
+    console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
+    return { ok: false, error: "We couldn't complete that right now. Please try again." };
+  }
   try {
     const auth = await requireAuth();
     await markTemplatesCore(sql(), auth.operationId);
