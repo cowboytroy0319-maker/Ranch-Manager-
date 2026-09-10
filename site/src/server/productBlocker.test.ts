@@ -1192,17 +1192,61 @@ describe("pasture activity idempotency + correction path", () => {
 //     0018 previously declared a GLOBAL `client_request_id UNIQUE`, which
 //     wrongly rejected one ranch's retry when another ranch generated the
 //     same UUID.)
+//
+// The tests below are FULLY SELF-CONTAINED: EACH test creates its OWN fresh
+// operations, hay stacks (known starting quantities), and pastures, and
+// removes them again at the end — deleting the operation cascades to
+// hay_inventory, pastures, expenses, restock_log, and pasture_activities
+// (all FK ON DELETE CASCADE). Nothing is shared with the other describes and
+// no state carries over between these tests, no matter what order they run in.
 // ---------------------------------------------------------------------------
 
 describe("client_request_id uniqueness is PER OPERATION (ranch), not global", () => {
+  type FreshRanch = {
+    opId: number;
+    hayId: number;
+    hayStart: number;
+    pastureId: number;
+    pasture2Id: number;
+  };
+
+  let ranchSeq = 0;
+
+  async function freshRanch(label: string, hayStart: number): Promise<FreshRanch> {
+    ranchSeq += 1;
+    const unique = `${Date.now()}-#${ranchSeq}`;
+    const [op] = await db<[{ id: number }]>`
+      INSERT INTO operations (name) VALUES (${`Per-Op Key Ranch ${label} ${unique}`}) RETURNING id`;
+    const [hay] = await db<[{ id: number }]>`
+      INSERT INTO hay_inventory (operation_id, feed_type, quantity, unit, low_stock_threshold)
+      VALUES (${op.id}, 'grass', ${hayStart}, 'bales', 10) RETURNING id`;
+    const [p1] = await db<[{ id: number }]>`
+      INSERT INTO pastures (operation_id, name, size_acres, status)
+      VALUES (${op.id}, ${`Paddock-1 ${label} ${unique}`}, 40, 'resting') RETURNING id`;
+    const [p2] = await db<[{ id: number }]>`
+      INSERT INTO pastures (operation_id, name, size_acres, status)
+      VALUES (${op.id}, ${`Paddock-2 ${label} ${unique}`}, 25, 'resting') RETURNING id`;
+    return { opId: op.id, hayId: hay.id, hayStart, pastureId: p1.id, pasture2Id: p2.id };
+  }
+
+  async function cleanupRanches(...ranches: FreshRanch[]): Promise<void> {
+    // operations cascades to hay_inventory, pastures, expenses, restock_log,
+    // and pasture_activities — one delete per ranch clears everything.
+    for (const r of ranches) {
+      await db`DELETE FROM operations WHERE id=${r.opId}`;
+    }
+  }
+
   test("Ranches A and B use the SAME client_request_id — each gets its OWN restock and its OWN activity", async () => {
-    const shared = `shared-req-${Date.now()}`;
+    const a = await freshRanch("A", 100); // A's stack starts at exactly 100
+    const b = await freshRanch("B", 50); // B's stack starts at exactly 50
+    const shared = `shared-req-${Date.now()}-${a.opId}-${b.opId}`;
 
     // A restocks its own hay stack; B restocks its own — identical request id.
-    const aRestock = await restockItemCore(db, opAId, {
+    const aRestock = await restockItemCore(db, a.opId, {
       client_request_id: shared,
       item_kind: "hay",
-      item_id: hayAId,
+      item_id: a.hayId,
       quantity: 5,
       unit: "bales",
       restock_date: inMonth(),
@@ -1214,10 +1258,10 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
     if (!aRestock.ok) throw new Error(aRestock.error);
     expect(aRestock.duplicate).toBe(false);
 
-    const bRestock = await restockItemCore(db, opBId, {
+    const bRestock = await restockItemCore(db, b.opId, {
       client_request_id: shared, // identical key, DIFFERENT ranch — must not collide
       item_kind: "hay",
-      item_id: hayBId,
+      item_id: b.hayId,
       quantity: 4,
       unit: "bales",
       restock_date: inMonth(),
@@ -1234,36 +1278,44 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
     const restockRows = await db<{ id: number; operation_id: number }[]>`
       SELECT id, operation_id FROM restock_log WHERE client_request_id=${shared} ORDER BY id`;
     expect(restockRows.length).toBe(2);
-    expect(restockRows.map((r) => r.operation_id)).toContain(opAId);
-    expect(restockRows.map((r) => r.operation_id)).toContain(opBId);
+    expect(restockRows.map((r) => r.operation_id)).toContain(a.opId);
+    expect(restockRows.map((r) => r.operation_id)).toContain(b.opId);
+    // Exactly TWO linked expenses (one per ranch) with DIFFERENT operation ids.
+    const linkedExpenses = await db<{ id: number; operation_id: number; source_id: number }[]>`
+      SELECT id, operation_id, source_id FROM expenses
+      WHERE source_type='restock' AND (source_id=${aRestock.id} OR source_id=${bRestock.id})`;
+    expect(linkedExpenses.length).toBe(2);
+    expect(linkedExpenses.map((e) => e.operation_id)).toContain(a.opId);
+    expect(linkedExpenses.map((e) => e.operation_id)).toContain(b.opId);
     // Each ranch's own inventory moved, independently.
-    const [hayA] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayAId}`;
-    const [hayB] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayBId}`;
+    const [hayA] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${a.hayId}`;
+    const [hayB] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${b.hayId}`;
     expect(Number(hayA.quantity)).toBe(105); // 100 + 5 (A's own restock)
     expect(Number(hayB.quantity)).toBe(54); // 50 + 4 (B's own restock)
 
-    // Same for pasture activities: both ranches record under the SAME key.
-    const aActivity = await savePastureActivityCore(db, opAId, {
+    // Same for pasture activities: both ranches record under the SAME key,
+    // each creating its own linked expense.
+    const aActivity = await savePastureActivityCore(db, a.opId, {
       client_request_id: shared,
-      pasture_id: pastureA1,
+      pasture_id: a.pastureId,
       activity_date: inMonth(),
       activity_type: "fencing",
       cost_cents: 15000,
       notes: null,
-      record_expense: false,
+      record_expense: true,
     });
     expect(aActivity.ok).toBe(true);
     if (!aActivity.ok) throw new Error(aActivity.error);
     expect(aActivity.duplicate).toBe(false);
 
-    const bActivity = await savePastureActivityCore(db, opBId, {
+    const bActivity = await savePastureActivityCore(db, b.opId, {
       client_request_id: shared, // identical key, DIFFERENT ranch
-      pasture_id: pastureB1,
+      pasture_id: b.pastureId,
       activity_date: inMonth(),
       activity_type: "mowing",
       cost_cents: 12000,
       notes: null,
-      record_expense: false,
+      record_expense: true,
     });
     expect(bActivity.ok).toBe(true);
     if (!bActivity.ok) throw new Error(bActivity.error);
@@ -1273,54 +1325,86 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
     const activityRows = await db<{ id: number; operation_id: number }[]>`
       SELECT id, operation_id FROM pasture_activities WHERE client_request_id=${shared} ORDER BY id`;
     expect(activityRows.length).toBe(2);
-    expect(activityRows.map((r) => r.operation_id)).toContain(opAId);
-    expect(activityRows.map((r) => r.operation_id)).toContain(opBId);
+    expect(activityRows.map((r) => r.operation_id)).toContain(a.opId);
+    expect(activityRows.map((r) => r.operation_id)).toContain(b.opId);
+    const activityExpenses = await db<{ id: number; operation_id: number }[]>`
+      SELECT id, operation_id FROM expenses
+      WHERE source_type='pasture_activity' AND (source_id=${aActivity.id} OR source_id=${bActivity.id})`;
+    expect(activityExpenses.length).toBe(2);
+    expect(activityExpenses.map((e) => e.operation_id)).toContain(a.opId);
+    expect(activityExpenses.map((e) => e.operation_id)).toContain(b.opId);
 
-    // DB-level backstop proof (bypassing the app dedupe): a SECOND row for the
-    // SAME (operation_id, client_request_id) is rejected by the NAMED
-    // constraint, while the same key under the OTHER operation still inserts.
+    // ---- Raw DB backstop (bypasses the app dedupe entirely) ----
+    // Remove the app-created rows first so the raw inserts start from a clean
+    // slate, then prove all three facts at the constraint level:
+    //   (1) the FIRST raw insert per (operation, key) lands,
+    //   (2) the SAME key under the OTHER operation also lands (no global
+    //       collision — this is the cross-ranch reuse proof),
+    //   (3) a SECOND raw row for the SAME (operation, key) is rejected by the
+    //       NAMED constraint (the expected error is caught, not a failure).
+    await db`DELETE FROM expenses WHERE operation_id IN (${a.opId}, ${b.opId})`;
+    await db`DELETE FROM restock_log WHERE client_request_id=${shared}`;
+    await db`DELETE FROM pasture_activities WHERE client_request_id=${shared}`;
+
+    await db`INSERT INTO restock_log (operation_id, item_kind, hay_item_id, quantity, unit, restock_date, client_request_id)
+             VALUES (${a.opId}, 'hay', ${a.hayId}, 1, 'bales', ${inMonth()}, ${shared})`;
+    const [crossRestock] = await db<[{ id: number }]>`
+      INSERT INTO restock_log (operation_id, item_kind, hay_item_id, quantity, unit, restock_date, client_request_id)
+      VALUES (${b.opId}, 'hay', ${b.hayId}, 1, 'bales', ${inMonth()}, ${shared})
+      RETURNING id`;
+    expect(crossRestock.id > 0).toBe(true); // cross-operation reuse: no collision
+
     let restockRaceError = "";
     try {
       await db`INSERT INTO restock_log (operation_id, item_kind, hay_item_id, quantity, unit, restock_date, client_request_id)
-         VALUES (${opAId}, 'hay', ${hayAId}, 1, 'bales', ${inMonth()}, ${shared})`;
+               VALUES (${a.opId}, 'hay', ${a.hayId}, 1, 'bales', ${inMonth()}, ${shared})`;
     } catch (err) {
       restockRaceError = err instanceof Error ? err.message : String(err);
     }
     expect(restockRaceError).toContain("uq_restock_log_operation_request");
 
+    const rawRestockRows = await db<{ operation_id: number }[]>`
+      SELECT operation_id FROM restock_log WHERE client_request_id=${shared}`;
+    expect(rawRestockRows.length).toBe(2);
+    expect(rawRestockRows.map((r) => r.operation_id)).toContain(a.opId);
+    expect(rawRestockRows.map((r) => r.operation_id)).toContain(b.opId);
+
+    // Mirror the three facts for pasture_activities.
+    await db`INSERT INTO pasture_activities (operation_id, pasture_id, activity_date, activity_type, client_request_id)
+             VALUES (${a.opId}, ${a.pastureId}, ${inMonth()}, 'inspection', ${shared})`;
+    const [crossActivity] = await db<[{ id: number }]>`
+      INSERT INTO pasture_activities (operation_id, pasture_id, activity_date, activity_type, client_request_id)
+      VALUES (${b.opId}, ${b.pastureId}, ${inMonth()}, 'inspection', ${shared})
+      RETURNING id`;
+    expect(crossActivity.id > 0).toBe(true);
+
     let activityRaceError = "";
     try {
       await db`INSERT INTO pasture_activities (operation_id, pasture_id, activity_date, activity_type, client_request_id)
-         VALUES (${opBId}, ${pastureB1}, ${inMonth()}, 'inspection', ${shared})`;
+               VALUES (${a.opId}, ${a.pastureId}, ${inMonth()}, 'inspection', ${shared})`;
     } catch (err) {
       activityRaceError = err instanceof Error ? err.message : String(err);
     }
     expect(activityRaceError).toContain("uq_pasture_activities_operation_request");
 
-    // Cross-operation reuse at the raw DB level: still allowed, no collision.
-    const [crossRestock] = await db<[{ id: number }]>`
-      INSERT INTO restock_log (operation_id, item_kind, hay_item_id, quantity, unit, restock_date, client_request_id)
-      VALUES (${opBId}, 'hay', ${hayBId}, 1, 'bales', ${inMonth()}, ${shared})
-      RETURNING id`;
-    expect(crossRestock.id > 0).toBe(true);
-    await db`DELETE FROM restock_log WHERE id=${crossRestock.id}`;
+    const rawActivityRows = await db<{ operation_id: number }[]>`
+      SELECT operation_id FROM pasture_activities WHERE client_request_id=${shared}`;
+    expect(rawActivityRows.length).toBe(2);
+    expect(rawActivityRows.map((r) => r.operation_id)).toContain(a.opId);
+    expect(rawActivityRows.map((r) => r.operation_id)).toContain(b.opId);
 
-    // Cleanup: remove this scenario's rows and reset both inventories.
-    await db`DELETE FROM expenses WHERE (operation_id=${opAId} AND source_type='restock' AND source_id=${aRestock.id})
-             OR (operation_id=${opBId} AND source_type='restock' AND source_id=${bRestock.id})`;
-    await db`DELETE FROM restock_log WHERE client_request_id=${shared}`;
-    await db`DELETE FROM pasture_activities WHERE client_request_id=${shared}`;
-    await db`UPDATE hay_inventory SET quantity = 100 WHERE id=${hayAId}`;
-    await db`UPDATE hay_inventory SET quantity = 50 WHERE id=${hayBId}`;
+    // Self-contained teardown: cascades remove every row this test created.
+    await cleanupRanches(a, b);
   });
 
   test("a repeat request with the same client_request_id INSIDE Ranch A creates no duplicate inventory/activity/expense", async () => {
-    const key = `intra-a-${Date.now()}`;
+    const a = await freshRanch("A", 100); // fresh stack starts at exactly 100
+    const key = `intra-a-${Date.now()}-${a.opId}`;
 
-    const first = await restockItemCore(db, opAId, {
+    const first = await restockItemCore(db, a.opId, {
       client_request_id: key,
       item_kind: "hay",
-      item_id: hayAId,
+      item_id: a.hayId,
       quantity: 12,
       unit: "bales",
       restock_date: inMonth(),
@@ -1332,10 +1416,10 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
     if (!first.ok) throw new Error(first.error);
 
     // Same ranch, SAME key, wildly different payload — must be a no-op retry.
-    const retry = await restockItemCore(db, opAId, {
+    const retry = await restockItemCore(db, a.opId, {
       client_request_id: key,
       item_kind: "hay",
-      item_id: hayAId,
+      item_id: a.hayId,
       quantity: 999,
       unit: "bales",
       restock_date: inMonth(),
@@ -1349,16 +1433,16 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
     expect(retry.id).toBe(first.id);
 
     // Inventory applied ONCE (100 + 12), never 100 + 12 + 999.
-    const [hay] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayAId}`;
+    const [hay] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${a.hayId}`;
     expect(Number(hay.quantity)).toBe(112);
     // Exactly ONE restock row and ONE linked expense inside Ranch A.
-    expect((await db`SELECT id FROM restock_log WHERE client_request_id=${key} AND operation_id=${opAId}`).length).toBe(1);
-    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${first.id} AND operation_id=${opAId}`).length).toBe(1);
+    expect((await db`SELECT id FROM restock_log WHERE client_request_id=${key} AND operation_id=${a.opId}`).length).toBe(1);
+    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${first.id} AND operation_id=${a.opId}`).length).toBe(1);
 
     // Same-key activity retry inside Ranch A: no duplicate activity/expense.
-    const aFirst = await savePastureActivityCore(db, opAId, {
+    const aFirst = await savePastureActivityCore(db, a.opId, {
       client_request_id: key,
-      pasture_id: pastureA1,
+      pasture_id: a.pastureId,
       activity_date: inMonth(),
       activity_type: "fencing",
       cost_cents: 20000,
@@ -1367,9 +1451,9 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
     });
     expect(aFirst.ok).toBe(true);
     if (!aFirst.ok) throw new Error(aFirst.error);
-    const aRetry = await savePastureActivityCore(db, opAId, {
+    const aRetry = await savePastureActivityCore(db, a.opId, {
       client_request_id: key,
-      pasture_id: pastureA2, // would be a different activity if it ran — it must NOT
+      pasture_id: a.pasture2Id, // would be a different activity if it ran — it must NOT
       activity_date: inMonth(),
       activity_type: "mowing",
       cost_cents: 888888,
@@ -1383,27 +1467,24 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
 
     const actRows = await db<{ activity_type: string; cost_cents: number; pasture_id: number }[]>`
       SELECT activity_type, cost_cents, pasture_id FROM pasture_activities
-      WHERE client_request_id=${key} AND operation_id=${opAId}`;
+      WHERE client_request_id=${key} AND operation_id=${a.opId}`;
     expect(actRows.length).toBe(1);
     expect(actRows[0].activity_type).toBe("fencing"); // original values kept
     expect(actRows[0].cost_cents).toBe(20000);
-    expect(actRows[0].pasture_id).toBe(pastureA1);
-    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${aFirst.id} AND operation_id=${opAId}`).length).toBe(1);
+    expect(actRows[0].pasture_id).toBe(a.pastureId);
+    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${aFirst.id} AND operation_id=${a.opId}`).length).toBe(1);
 
-    await db`DELETE FROM expenses WHERE (operation_id=${opAId} AND source_type='restock' AND source_id=${first.id})
-             OR (operation_id=${opAId} AND source_type='pasture_activity' AND source_id=${aFirst.id})`;
-    await db`DELETE FROM restock_log WHERE client_request_id=${key} AND operation_id=${opAId}`;
-    await db`DELETE FROM pasture_activities WHERE client_request_id=${key} AND operation_id=${opAId}`;
-    await db`UPDATE hay_inventory SET quantity = 100 WHERE id=${hayAId}`;
+    await cleanupRanches(a);
   });
 
   test("a repeat request with the same client_request_id INSIDE Ranch B also creates no duplicate record within Ranch B", async () => {
-    const key = `intra-b-${Date.now()}`;
+    const b = await freshRanch("B", 50); // fresh stack starts at exactly 50
+    const key = `intra-b-${Date.now()}-${b.opId}`;
 
-    const first = await restockItemCore(db, opBId, {
+    const first = await restockItemCore(db, b.opId, {
       client_request_id: key,
       item_kind: "hay",
-      item_id: hayBId,
+      item_id: b.hayId,
       quantity: 7,
       unit: "bales",
       restock_date: inMonth(),
@@ -1414,10 +1495,10 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
     expect(first.ok).toBe(true);
     if (!first.ok) throw new Error(first.error);
 
-    const retry = await restockItemCore(db, opBId, {
+    const retry = await restockItemCore(db, b.opId, {
       client_request_id: key,
       item_kind: "hay",
-      item_id: hayBId,
+      item_id: b.hayId,
       quantity: 555,
       unit: "bales",
       restock_date: inMonth(),
@@ -1431,15 +1512,15 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
     expect(retry.id).toBe(first.id);
 
     // Ranch B's inventory applied ONCE (50 + 7); one log row; one linked expense.
-    const [hay] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayBId}`;
+    const [hay] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${b.hayId}`;
     expect(Number(hay.quantity)).toBe(57);
-    expect((await db`SELECT id FROM restock_log WHERE client_request_id=${key} AND operation_id=${opBId}`).length).toBe(1);
-    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${first.id} AND operation_id=${opBId}`).length).toBe(1);
+    expect((await db`SELECT id FROM restock_log WHERE client_request_id=${key} AND operation_id=${b.opId}`).length).toBe(1);
+    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${first.id} AND operation_id=${b.opId}`).length).toBe(1);
 
     // Same-key activity retry inside Ranch B.
-    const bFirst = await savePastureActivityCore(db, opBId, {
+    const bFirst = await savePastureActivityCore(db, b.opId, {
       client_request_id: key,
-      pasture_id: pastureB1,
+      pasture_id: b.pastureId,
       activity_date: inMonth(),
       activity_type: "water_system",
       cost_cents: 9000,
@@ -1449,9 +1530,9 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
     expect(bFirst.ok).toBe(true);
     if (!bFirst.ok) throw new Error(bFirst.error);
 
-    const bRetry = await savePastureActivityCore(db, opBId, {
+    const bRetry = await savePastureActivityCore(db, b.opId, {
       client_request_id: key,
-      pasture_id: pastureB1,
+      pasture_id: b.pasture2Id, // would be a different activity if it ran — it must NOT
       activity_date: inMonth(),
       activity_type: "repair",
       cost_cents: 777777,
@@ -1463,19 +1544,16 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
     expect(bRetry.duplicate).toBe(true);
     expect(bRetry.id).toBe(bFirst.id);
 
-    const actRows = await db<{ activity_type: string; cost_cents: number }[]>`
-      SELECT activity_type, cost_cents FROM pasture_activities
-      WHERE client_request_id=${key} AND operation_id=${opBId}`;
+    const actRows = await db<{ activity_type: string; cost_cents: number; pasture_id: number }[]>`
+      SELECT activity_type, cost_cents, pasture_id FROM pasture_activities
+      WHERE client_request_id=${key} AND operation_id=${b.opId}`;
     expect(actRows.length).toBe(1);
     expect(actRows[0].activity_type).toBe("water_system");
     expect(actRows[0].cost_cents).toBe(9000);
-    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${bFirst.id} AND operation_id=${opBId}`).length).toBe(1);
+    expect(actRows[0].pasture_id).toBe(b.pastureId);
+    expect((await db`SELECT id FROM expenses WHERE source_type='pasture_activity' AND source_id=${bFirst.id} AND operation_id=${b.opId}`).length).toBe(1);
 
-    await db`DELETE FROM expenses WHERE (operation_id=${opBId} AND source_type='restock' AND source_id=${first.id})
-             OR (operation_id=${opBId} AND source_type='pasture_activity' AND source_id=${bFirst.id})`;
-    await db`DELETE FROM restock_log WHERE client_request_id=${key} AND operation_id=${opBId}`;
-    await db`DELETE FROM pasture_activities WHERE client_request_id=${key} AND operation_id=${opBId}`;
-    await db`UPDATE hay_inventory SET quantity = 50 WHERE id=${hayBId}`;
+    await cleanupRanches(b);
   });
 });
 
