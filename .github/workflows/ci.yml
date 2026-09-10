@@ -1,0 +1,77 @@
+# Ranch Manager Pro — CI (runs on every pull request)
+#
+# Steps: install deps with Bun → start a Postgres 16 service container →
+# migrate a scratch CI database → run the test suite → typecheck against the
+# KNOWN-ERRORS BASELINE → production build.
+#
+# TYPECHECK BASELINE (site/tsc-baseline.txt):
+# `tsc --noEmit` currently exits non-zero on 15 PRE-EXISTING type nits
+# (unused variables in dashboard/demo files, missing Bun global types in
+# serve.ts, one possibly-undefined index). Fixing those is out of scope of
+# the current product-blocker work, so the typecheck step is a GUARD, not a
+# clean check: it fails only when tsc reports an error that is NOT already
+# listed in the baseline (sorted diff via `comm -23`). Baseline entries are
+# exact sorted lines in the form `file(line,col): error TSxxxx: message`.
+# To retire an error, fix it and delete its line from the baseline in the
+# same PR — the baseline may only shrink, never grow.
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ranch_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/ranch_ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: site
+        run: bun install --frozen-lockfile
+
+      - name: Migrate database (scratch CI database only)
+        working-directory: site
+        run: bun run db:migrate
+
+      - name: Test
+        working-directory: site
+        run: bun test
+
+      # Typecheck guard: fail on any error NOT in the baseline. The baseline
+      # file lists the 15 known pre-existing errors (see header comment).
+      - name: Typecheck (fail on errors not in site/tsc-baseline.txt)
+        working-directory: site
+        run: |
+          bunx tsc --noEmit > tsc-current.txt 2>&1 || true
+          grep -E "error TS" tsc-current.txt | sort > tsc-current-sorted.txt || true
+          NEW=$(comm -23 tsc-current-sorted.txt tsc-baseline.txt)
+          if [ -n "$NEW" ]; then
+            echo "::error::New TypeScript errors not in site/tsc-baseline.txt:"
+            echo "$NEW"
+            exit 1
+          fi
+          echo "Typecheck OK — no new errors beyond the $(wc -l < tsc-baseline.txt) baseline entries."
+
+      - name: Build
+        working-directory: site
+        run: bun run build

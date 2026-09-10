@@ -1,0 +1,15 @@
+serve.ts(22,35): error TS2339: Property 'dir' does not exist on type 'ImportMeta'.
+serve.ts(39,9): error TS2868: Cannot find name 'Bun'. Do you need to install type definitions for Bun? Try `npm i --save-dev @types/bun` and then add 'bun' to the types field in your tsconfig.
+serve.ts(41,5): error TS2868: Cannot find name 'Bun'. Do you need to install type definitions for Bun? Try `npm i --save-dev @types/bun` and then add 'bun' to the types field in your tsconfig.
+serve.ts(44,19): error TS7006: Parameter 'req' implicitly has an 'any' type.
+serve.ts(56,24): error TS2868: Cannot find name 'Bun'. Do you need to install type definitions for Bun? Try `npm i --save-dev @types/bun` and then add 'bun' to the types field in your tsconfig.
+serve.ts(65,11): error TS2868: Cannot find name 'Bun'. Do you need to install type definitions for Bun? Try `npm i --save-dev @types/bun` and then add 'bun' to the types field in your tsconfig.
+src/components/dashboard/CalendarSnapshot.tsx(98,12): error TS6133: 'y' is declared but its value is never read.
+src/components/dashboard/CalendarSnapshot.tsx(98,15): error TS6133: 'm' is declared but its value is never read.
+src/components/dashboard/MorningBriefing.tsx(50,9): error TS6133: 'today' is declared but its value is never read.
+src/components/demo/PastureModule.tsx(2,23): error TS6133: 'CardTitle' is declared but its value is never read.
+src/components/demo/PastureModule.tsx(205,24): error TS2532: Object is possibly 'undefined'.
+src/components/demo/PastureModule.tsx(209,22): error TS2532: Object is possibly 'undefined'.
+src/data/demoSites.ts(351,9): error TS6133: 'speciesKey' is declared but its value is never read.
+src/routes/analytics.tsx(16,10): error TS6133: 'AnalyticsPage' is declared but its value is never read.
+src/routes/index.tsx(12,7): error TS6133: 'maxCost' is declared but its value is never read.
