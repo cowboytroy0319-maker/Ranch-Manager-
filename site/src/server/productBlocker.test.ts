@@ -1354,14 +1354,19 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
       RETURNING id`;
     expect(crossRestock.id > 0).toBe(true); // cross-operation reuse: no collision
 
-    let restockRaceError = "";
+    let restockRaceCode = "";
+    let restockRaceMsg = "";
     try {
       await db`INSERT INTO restock_log (operation_id, item_kind, hay_item_id, quantity, unit, restock_date, client_request_id)
                VALUES (${a.opId}, 'hay', ${a.hayId}, 1, 'bales', ${inMonth()}, ${shared})`;
     } catch (err) {
-      restockRaceError = err instanceof Error ? err.message : String(err);
+      restockRaceCode = (err as { code?: string })?.code ?? "";
+      restockRaceMsg = err instanceof Error ? err.message : String(err);
     }
-    expect(restockRaceError).toContain("uq_restock_log_operation_request");
+    // The per-operation unique constraint is the backstop; the db-layer guard
+    // (src/dbErrors.ts) masks its raw text — assert the SQLSTATE instead.
+    expect(restockRaceCode).toBe("23505");
+    expect(restockRaceMsg).not.toContain("uq_");
 
     const rawRestockRows = await db<{ operation_id: number }[]>`
       SELECT operation_id FROM restock_log WHERE client_request_id=${shared}`;
@@ -1378,14 +1383,17 @@ describe("client_request_id uniqueness is PER OPERATION (ranch), not global", ()
       RETURNING id`;
     expect(crossActivity.id > 0).toBe(true);
 
-    let activityRaceError = "";
+    let activityRaceCode = "";
+    let activityRaceMsg = "";
     try {
       await db`INSERT INTO pasture_activities (operation_id, pasture_id, activity_date, activity_type, client_request_id)
                VALUES (${a.opId}, ${a.pastureId}, ${inMonth()}, 'inspection', ${shared})`;
     } catch (err) {
-      activityRaceError = err instanceof Error ? err.message : String(err);
+      activityRaceCode = (err as { code?: string })?.code ?? "";
+      activityRaceMsg = err instanceof Error ? err.message : String(err);
     }
-    expect(activityRaceError).toContain("uq_pasture_activities_operation_request");
+    expect(activityRaceCode).toBe("23505");
+    expect(activityRaceMsg).not.toContain("uq_");
 
     const rawActivityRows = await db<{ operation_id: number }[]>`
       SELECT operation_id FROM pasture_activities WHERE client_request_id=${shared}`;

@@ -14,7 +14,7 @@
  * due dates / recent usage always land in the right window regardless of when
  * you seed.
  */
-import { closeDb, sql } from "../src/db";
+import { closeDb, rawSql, sql } from "../src/db";
 import { runMigrations } from "./migrate";
 
 const day = 24 * 60 * 60 * 1000;
@@ -722,7 +722,7 @@ async function seedTaxExemptions(db: ReturnType<typeof sql>): Promise<number> {
 }
 
 async function seed(): Promise<void> {
-  const db = sql();
+  const db = rawSql();
 
   // Migrations 0013+ scope every module table to an operation. The seed backs
   // all of its rows onto the default operation — the single-tenant scope today.

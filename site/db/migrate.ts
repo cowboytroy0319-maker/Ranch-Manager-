@@ -10,7 +10,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { closeDb, sql } from "../src/db";
+import { closeDb, rawSql } from "../src/db";
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "migrations");
 
@@ -29,7 +29,7 @@ function splitStatements(sqlText: string): string[] {
 }
 
 export async function runMigrations(): Promise<string[]> {
-  const db = sql();
+  const db = rawSql();
   await db`CREATE TABLE IF NOT EXISTS schema_migrations (
     name       text PRIMARY KEY,
     applied_at timestamptz NOT NULL DEFAULT now()
