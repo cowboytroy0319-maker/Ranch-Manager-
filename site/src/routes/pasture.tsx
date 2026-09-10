@@ -13,7 +13,7 @@ import {
 } from "~/components/pasture/PastureModals";
 import { useAddIntent } from "~/components/useAddIntent";
 import { TemplatesLink } from "~/components/TemplatesLink";
-import type { Pasture, Species } from "~/types/pasture";
+import type { Pasture, PastureActivity, Species } from "~/types/pasture";
 
 export const Route = createFileRoute("/pasture")({
   validateSearch: (search: Record<string, unknown>): { add?: string; open?: number } => {
@@ -436,7 +436,11 @@ function PasturePage() {
   // Pasture DETAIL view — opened by tapping a row, or via ?open=<id> (the
   // deep link an expense's "↳ pasture activity" indicator uses).
   const [detailId, setDetailId] = useState<number | null>(null);
-  const [action, setAction] = useState<{ kind: "activity" | "move" | "condition" | "water"; pasture: Pasture } | null>(null);
+  const [action, setAction] = useState<{
+    kind: "activity" | "activity-edit" | "move" | "condition" | "water";
+    pasture: Pasture;
+    activity?: PastureActivity; // present when kind === "activity-edit"
+  } | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
 
   useEffect(() => {
@@ -814,10 +818,26 @@ function PasturePage() {
           data={data}
           onClose={() => setDetailId(null)}
           onAction={(a) => setAction(a)}
+          onEditActivity={(activity) =>
+            setAction({ kind: "activity-edit", pasture: detailPasture, activity })
+          }
+          onMessage={(message) => {
+            setFlash(message);
+            refresh();
+          }}
         />
       ) : null}
       {action?.kind === "activity" ? (
         <ActivityFormModal pasture={action.pasture} onClose={() => setAction(null)} onSaved={onActionDone} />
+      ) : null}
+      {action?.kind === "activity-edit" && action.activity ? (
+        <ActivityFormModal
+          key={`edit-activity-${action.activity.id}`}
+          pasture={action.pasture}
+          editing={action.activity}
+          onClose={() => setAction(null)}
+          onSaved={onActionDone}
+        />
       ) : null}
       {action?.kind === "move" ? (
         <MoveGroupModal pasture={action.pasture} data={data} onClose={() => setAction(null)} onSaved={onActionDone} />

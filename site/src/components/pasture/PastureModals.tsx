@@ -10,7 +10,15 @@
 // no negative head count) surface their own safe messages here.
 // ============================================================================
 import { useState } from "react";
-import { savePasture, savePastureActivity, moveLivestock, type PastureInput } from "~/server/pasture";
+import {
+  savePasture,
+  savePastureActivity,
+  updatePastureActivity,
+  deletePastureActivity,
+  moveLivestock,
+  PASTURE_ACTIVITY_DUPLICATE_MESSAGE,
+  type PastureInput,
+} from "~/server/pasture";
 import { newClientRequestId } from "~/components/feed/restockUI";
 import { useDraftPersistence, draftKey } from "~/components/drafts";
 import {
@@ -19,6 +27,7 @@ import {
   PASTURE_CONDITIONS,
   WATER_STATUSES,
   type Pasture,
+  type PastureActivity,
   type PastureData,
   type Species,
 } from "~/types/pasture";
@@ -189,20 +198,47 @@ export function PastureDetailModal({
   data,
   onClose,
   onAction,
+  onEditActivity,
+  onMessage,
 }: {
   pasture: Pasture;
   data: PastureData;
   onClose: () => void;
   /** Opens one of the detail's action forms (still inside the route). */
   onAction: (a: { kind: "activity" | "move" | "condition" | "water"; pasture: Pasture }) => void;
+  /** Opens the activity form in EDIT mode for this activity. */
+  onEditActivity: (a: PastureActivity) => void;
+  /** Surfaces an outcome message (flash) — used after a delete. */
+  onMessage: (message: string) => void;
 }) {
   const activeAssignments = data.assignments.filter((a) => a.pasture_id === pasture.id && !a.ended_at);
   const activities = data.activities.filter((a) => a.pasture_id === pasture.id);
   const movements = data.movements.filter((m) => m.to_pasture_id === pasture.id || m.from_pasture_id === pasture.id);
   const pastureName = (id: number | null) => (id == null ? null : data.pastures.find((p) => p.id === id)?.name ?? null);
   const today = todayStr();
+  // Delete confirmation state — the delete removes the activity AND its
+  // linked expense together (server rule), so the ask says exactly that.
+  const [deleting, setDeleting] = useState<PastureActivity | null>(null);
+  const [deletingBusy, setDeletingBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const confirmDelete = async () => {
+    if (!deleting) return;
+    setDeletingBusy(true);
+    setDeleteError(null);
+    const res = await deletePastureActivity({ data: deleting.id });
+    setDeletingBusy(false);
+    if (res.ok) {
+      const removed = res.linked_expense_removed;
+      setDeleting(null);
+      onMessage(removed ? "Activity deleted and its linked expense removed." : "Activity deleted.");
+    } else {
+      setDeleteError(res.error);
+    }
+  };
 
   return (
+    <>
     <Modal
       title={`🌾 ${pasture.name}`}
       sub={[pasture.pasture_type, pasture.location].filter(Boolean).join(" · ") || "Pasture detail"}
@@ -272,7 +308,9 @@ export function PastureDetailModal({
           </button>
         </div>
 
-        {/* Activity timeline */}
+        {/* Activity timeline — each entry can be corrected: Edit reopens the
+            activity form (the linked expense follows), Delete removes the
+            activity and its linked expense together after confirmation. */}
         <div>
           <h4 className="mb-1.5 text-sm font-semibold text-stone-800">Activity timeline</h4>
           {activities.length === 0 ? (
@@ -282,11 +320,31 @@ export function PastureDetailModal({
           ) : (
             <ul className="divide-y divide-stone-100 rounded-xl border border-stone-100">
               {activities.slice(0, 20).map((a) => (
-                <li key={a.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-2 text-sm">
-                  <span className="w-24 shrink-0 text-xs font-semibold text-stone-500">{a.activity_date}</span>
-                  <span className="font-medium text-stone-800">{ACTIVITY_TYPE_LABEL[a.activity_type] ?? a.activity_type}</span>
-                  <span className="ml-auto text-xs text-stone-600">{money(a.cost_cents)}</span>
-                  {a.notes && <p className="w-full text-xs text-stone-500">{a.notes}</p>}
+                <li key={a.id} className="px-3 py-2 text-sm">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span className="w-24 shrink-0 text-xs font-semibold text-stone-500">{a.activity_date}</span>
+                    <span className="font-medium text-stone-800">{ACTIVITY_TYPE_LABEL[a.activity_type] ?? a.activity_type}</span>
+                    <span className="ml-auto text-xs text-stone-600">{money(a.cost_cents)}</span>
+                  </div>
+                  {a.notes && <p className="text-xs text-stone-500">{a.notes}</p>}
+                  <div className="mt-1.5 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onEditActivity(a)}
+                      className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-stone-200 px-3 py-2 text-xs font-semibold text-stone-700 transition hover:border-green-700 hover:text-green-800"
+                      title="Edit this activity — the linked expense follows it"
+                    >
+                      ✏️ Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setDeleting(a); setDeleteError(null); }}
+                      className="inline-flex min-h-11 items-center gap-1 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 transition hover:border-red-700 hover:bg-red-50"
+                      title="Delete this activity and its linked expense"
+                    >
+                      🗑 Delete
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -323,33 +381,87 @@ export function PastureDetailModal({
         </div>
       </div>
     </Modal>
+      {/* Delete confirmation — states the exact behavior: the activity and its
+          linked expense go together, in one step. */}
+      {deleting ? (
+        <Modal
+          title="Delete this activity?"
+          sub={`${deleting.activity_date} · ${ACTIVITY_TYPE_LABEL[deleting.activity_type] ?? deleting.activity_type} · ${money(deleting.cost_cents)}`}
+          onClose={() => { setDeleting(null); setDeleteError(null); }}
+          footer={
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => { setDeleting(null); setDeleteError(null); }}
+                className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 sm:w-auto sm:px-5"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={deletingBusy}
+                className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-red-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-red-800 disabled:opacity-60 sm:w-auto sm:px-5"
+              >
+                {deletingBusy ? "Deleting…" : "Delete activity"}
+              </button>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            {deleteError && <ErrorNote error={deleteError} />}
+            <p className="text-sm font-semibold text-stone-800">
+              Delete this activity and its linked expense?
+            </p>
+            <p className="text-sm text-stone-600">
+              Both go together in one step: the activity is removed from this timeline and its linked Land / pasture
+              expense is removed from the expense ledger. This can&apos;t be undone.
+            </p>
+            {deleting.cost_cents == null && (
+              <p className="text-sm text-stone-500">
+                This activity has no linked expense — only the activity record is removed.
+              </p>
+            )}
+          </div>
+        </Modal>
+      ) : null}
+    </>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Record activity — date, type (10 kinds), optional cost, notes, and the
-// "Record as expense" checkbox (default ON). With cost + checked, ONE linked
-// Land / pasture expense is created.
+// Record / EDIT activity — date, type (10 kinds), optional cost, notes, and
+// the "Record as expense" checkbox (default ON). With cost + checked, ONE
+// linked Land / pasture expense is created; in edit mode the linked expense
+// follows the server rules (upserted when cost>0 AND checked, removed when
+// blank/0 or unchecked) — there is no separate expense editing.
 // ---------------------------------------------------------------------------
 
 export function ActivityFormModal({
   pasture,
+  editing = null,
   onClose,
   onSaved,
 }: {
   pasture: Pasture;
+  /** Present → the form edits this activity (no idempotency key needed: the
+   *  edit is absolute-value-set, so a retried edit lands in the same place). */
+  editing?: PastureActivity | null;
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
-  const [activityDate, setActivityDate] = useState(todayStr());
-  const [activityType, setActivityType] = useState<(typeof ACTIVITY_TYPES)[number]>("inspection");
-  const [costDollars, setCostDollars] = useState("");
-  const [notes, setNotes] = useState("");
+  const [activityDate, setActivityDate] = useState(editing?.activity_date ?? todayStr());
+  const [activityType, setActivityType] = useState<(typeof ACTIVITY_TYPES)[number]>(editing?.activity_type ?? "inspection");
+  const [costDollars, setCostDollars] = useState(
+    editing?.cost_cents != null ? (editing.cost_cents / 100).toFixed(2) : ""
+  );
+  const [notes, setNotes] = useState(editing?.notes ?? "");
   const [recordExpense, setRecordExpense] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // ONE idempotency key per form-open. Never regenerated on retry — the
-  // server dedupes on it, so a double-tap can't record the activity twice.
+  // ONE idempotency key per form-open (create only). Never regenerated on
+  // retry — the server dedupes on it, so a double-tap can't record the
+  // activity twice.
   const [clientRequestId] = useState(() => newClientRequestId());
 
   const submit = async (e: React.FormEvent) => {
@@ -357,22 +469,50 @@ export function ActivityFormModal({
     setSaving(true);
     setError(null);
     const cents = costDollars.trim() === "" ? null : Math.round(Number(costDollars) * 100);
+    const safeCents = cents != null && Number.isFinite(cents) && cents > 0 ? cents : null;
+    if (editing) {
+      const res = await updatePastureActivity({
+        data: {
+          id: editing.id,
+          activity_date: activityDate,
+          activity_type: activityType,
+          cost_cents: safeCents,
+          notes: notes.trim() ? notes.trim() : null,
+          record_expense: recordExpense,
+        },
+      });
+      if (res.ok) {
+        onSaved(
+          res.expense_linked
+            ? "Activity updated — the linked expense now matches it."
+            : "Activity updated — its linked expense was removed."
+        );
+        return;
+      }
+      setSaving(false);
+      setError(res.error);
+      return;
+    }
     const res = await savePastureActivity({
       data: {
         client_request_id: clientRequestId,
         pasture_id: pasture.id,
         activity_date: activityDate,
         activity_type: activityType,
-        cost_cents: cents != null && Number.isFinite(cents) && cents > 0 ? cents : null,
+        cost_cents: safeCents,
         notes: notes.trim() ? notes.trim() : null,
         record_expense: recordExpense,
       },
     });
     if (res.ok) {
+      // A duplicate (same request id — e.g. a double-tap) changed nothing;
+      // surface the exact duplicate message so the operator knows.
       onSaved(
-        res.expense_created
-          ? "Activity recorded and a Land / pasture expense was linked."
-          : "Activity recorded."
+        res.duplicate
+          ? PASTURE_ACTIVITY_DUPLICATE_MESSAGE
+          : res.expense_created
+            ? "Activity recorded and a Land / pasture expense was linked."
+            : "Activity recorded."
       );
     } else {
       setSaving(false);
@@ -382,10 +522,21 @@ export function ActivityFormModal({
 
   return (
     <Modal
-      title={`Record activity — ${pasture.name}`}
-      sub="Pasture work log; with a cost it can also be an expense"
+      title={editing ? `Edit activity — ${pasture.name}` : `Record activity — ${pasture.name}`}
+      sub={
+        editing
+          ? "Changes save absolutely; the linked expense follows (no separate expense editing)"
+          : "Pasture work log; with a cost it can also be an expense"
+      }
       onClose={onClose}
-      footer={<FooterButtons onCancel={onClose} onSubmitLabel="Record activity" saving={saving} formId="pasture-activity-form" />}
+      footer={
+        <FooterButtons
+          onCancel={onClose}
+          onSubmitLabel={editing ? "Save changes" : "Record activity"}
+          saving={saving}
+          formId="pasture-activity-form"
+        />
+      }
     >
       <form id="pasture-activity-form" onSubmit={submit} className="space-y-4">
         {error && <ErrorNote error={error} />}
@@ -428,7 +579,9 @@ export function ActivityFormModal({
           <span className="text-sm text-stone-700">
             Record as expense
             <span className="block text-xs text-stone-500">
-              With a cost entered, creates a linked Land / pasture expense.
+              {editing
+                ? "With a cost entered, the linked Land / pasture expense is created or updated to match; clear the cost (or uncheck) and any linked expense is removed."
+                : "With a cost entered, creates a linked Land / pasture expense."}
             </span>
           </span>
         </label>
