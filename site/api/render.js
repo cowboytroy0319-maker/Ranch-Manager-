@@ -21,4 +21,4 @@ export default function vercelHandler(req, res) {
   return handler(req, res);
 }
 
-export const config = { runtime: "nodejs22.x" };
+export const config = { runtime: "nodejs" };
