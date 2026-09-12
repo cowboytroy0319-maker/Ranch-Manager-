@@ -15,6 +15,7 @@ import {
   type FeedData,
   type FeedItem,
   type HayItem,
+  type RestockEntry,
   type UsageEntry,
 } from "~/types/feed";
 
@@ -24,7 +25,7 @@ import {
 
 export const getFeedData = createServerFn().handler(async (): Promise<FeedData> => {
   if (!isDatabaseConfigured()) {
-    return { configured: false, hay: [], feed: [], groups: [], usage: [] };
+    return { configured: false, hay: [], feed: [], groups: [], usage: [], restocks: [] };
   }
   try {
     const auth = await requireAuth();
@@ -61,6 +62,29 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
         ORDER BY u.log_date DESC, u.id DESC
         LIMIT 120`,
     ]);
+    // Restock history is best-effort: databases that predate the restock_log
+    // table (0018) serve the rest of the module without it.
+    let restocks: RestockEntry[] = [];
+    try {
+      const rows = await db`
+        SELECT r.id, to_char(r.restock_date, 'YYYY-MM-DD') AS restock_date,
+               r.item_kind, r.hay_item_id, r.feed_item_id,
+               r.quantity::float8 AS quantity, r.unit,
+               r.total_cost_cents, r.vendor, r.notes,
+               COALESCE(h.feed_type || COALESCE(', ' || h.cutting || ' cutting', ''), f.name, r.item_kind) AS item_label,
+               EXISTS (SELECT 1 FROM expenses e
+                       WHERE e.source_type = 'restock' AND e.source_id = r.id
+                         AND e.operation_id = ${auth.operationId}) AS has_expense
+        FROM restock_log r
+        LEFT JOIN hay_inventory h ON h.id = r.hay_item_id
+        LEFT JOIN feed_inventory f ON f.id = r.feed_item_id
+        WHERE r.operation_id = ${auth.operationId}
+        ORDER BY r.restock_date DESC, r.id DESC
+        LIMIT 60`;
+      restocks = rows as unknown as RestockEntry[];
+    } catch {
+      restocks = [];
+    }
 
     return {
       configured: true,
@@ -68,6 +92,7 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
       feed: feedRows as unknown as FeedItem[],
       groups: groupRows as unknown as HerdGroupRef[],
       usage: usageRows as unknown as UsageEntry[],
+      restocks,
     };
   } catch (err) {
     return {
@@ -77,6 +102,7 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
       feed: [],
       groups: [],
       usage: [],
+      restocks: [],
     };
   }
 });

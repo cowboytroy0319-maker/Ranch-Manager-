@@ -66,3 +66,29 @@ export function restockResultMessage(res: RestockResponse): { kind: "success" | 
       : "Inventory updated — no expense created (no cost entered).",
   };
 }
+
+/** Parse the dollars text field of the edit-restock form into cents-or-null.
+ *  Pure: blank/zero/negative-or-garbage → null (no linked expense); the
+ *  server validator still owns the final say on quantity/date. */
+export function parseEditCostDollars(raw: string): number | null {
+  const t = (raw ?? "").trim();
+  if (t === "") return null;
+  const cents = Math.round(Number(t) * 100);
+  if (!Number.isFinite(cents) || cents <= 0) return null;
+  return cents;
+}
+
+/** Outcome message after a successful updateRestock — must not overclaim:
+ *  only reports a linked expense when one actually exists. Pure for tests. */
+export function editRestockSavedMessage(hasExpense: boolean, costCents: number | null): string {
+  return hasExpense || (costCents != null && costCents > 0)
+    ? "Restock updated — inventory and linked expense now match."
+    : "Restock updated — no linked expense (no cost entered).";
+}
+
+/** Outcome message after a successful deleteRestock. Pure for tests. */
+export function voidRestockMessage(linkedExpenseRemoved: boolean): string {
+  return linkedExpenseRemoved
+    ? "Restock voided — inventory reversed and the linked expense removed."
+    : "Restock voided — inventory reversed.";
+}
