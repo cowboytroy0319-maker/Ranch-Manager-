@@ -57,12 +57,18 @@ export function LoginPage() {
         <button type="submit" disabled={busy} className={SUBMIT_BTN.btn}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
+        <p className="text-center text-sm">
+          <Link to="/forgot-password" className="font-semibold text-green-700 hover:underline">
+            Forgot password?
+          </Link>
+        </p>
       </form>
       <p className="mt-6 text-center text-sm text-stone-600">
         New to Ranch Manager Pro?{" "}
         <Link to="/register" className="font-semibold text-green-700 hover:underline">
-          Start your free month
-        </Link>
+          Create account
+        </Link>{" "}
+        — start your free month
       </p>
     </AuthFrame>
   );
