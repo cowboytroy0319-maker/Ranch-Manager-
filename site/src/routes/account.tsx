@@ -17,7 +17,7 @@ export const Route = createFileRoute("/account")({
 });
 
 function AccountPage() {
-  const { session } = Route.useLoaderData();
+  const { session } = Route.useRouteContext();
   const { mode } = Route.useSearch();
   const navigate = useNavigate();
   const router = useRouter();
