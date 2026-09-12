@@ -61,8 +61,9 @@ export function LoginPage() {
       <p className="mt-6 text-center text-sm text-stone-600">
         New to Ranch Manager Pro?{" "}
         <Link to="/register" className="font-semibold text-green-700 hover:underline">
-          Start your free month
-        </Link>
+          Create account
+        </Link>{" "}
+        — start your free month
       </p>
     </AuthFrame>
   );

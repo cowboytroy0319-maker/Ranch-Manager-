@@ -4,9 +4,9 @@ import { useState, type FormEvent, type ReactNode } from "react";
 
 export const SUBMIT_BTN = {
   input:
-    "w-full rounded-lg border border-stone-300 bg-white px-3 py-2.5 text-stone-900 placeholder-stone-400 focus:border-green-600 focus:ring-2 focus:ring-green-600/30 focus:outline-none",
+    "w-full min-h-[44px] rounded-lg border border-stone-300 bg-white px-3 py-2.5 text-base text-stone-900 placeholder-stone-400 focus:border-green-600 focus:ring-2 focus:ring-green-600/30 focus:outline-none",
   btn:
-    "w-full rounded-lg bg-green-700 px-4 py-3 font-semibold text-white hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-60",
+    "w-full min-h-[44px] rounded-lg bg-green-700 px-4 py-3 text-base font-semibold text-white hover:bg-green-800 disabled:cursor-not-allowed disabled:opacity-60",
 };
 
 export function AuthFrame({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
