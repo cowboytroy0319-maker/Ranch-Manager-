@@ -58,11 +58,17 @@ export function LoginPage() {
           {busy ? "Signing in…" : "Sign in"}
         </button>
       </form>
-      <p className="mt-6 text-center text-sm text-stone-600">
+      <p className="mt-4 text-center text-sm">
+        <Link to="/forgot-password" className="inline-flex min-h-[44px] items-center font-semibold text-green-700 hover:underline">
+          Forgot password?
+        </Link>
+      </p>
+      <p className="mt-2 text-center text-sm text-stone-600">
         New to Ranch Manager Pro?{" "}
         <Link to="/register" className="font-semibold text-green-700 hover:underline">
-          Start your free month
-        </Link>
+          Create account
+        </Link>{" "}
+        — start your free month
       </p>
     </AuthFrame>
   );

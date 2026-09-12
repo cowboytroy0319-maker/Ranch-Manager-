@@ -141,4 +141,24 @@ export const getSession = createServerFn().handler(async (): Promise<{
   }
 });
 
+export const changePassword = createServerFn({ method: "POST" })
+  .validator((raw: unknown) => {
+    const d = (raw ?? {}) as Record<string, unknown>;
+    return { currentPassword: d.currentPassword, password: d.password, confirm: d.confirm };
+  })
+  .handler(async ({ data }): Promise<{ ok: boolean; message?: string; error?: string }> => {
+    const [{ isDatabaseConfigured, sql }, authSrv] = await Promise.all([
+      import("~/db"),
+      import("./authServer"),
+    ]);
+    if (!isDatabaseConfigured()) return { ok: false, error: "Database not configured." };
+    const token = authSrv.readSessionToken();
+    const res = await authSrv.changePasswordCore(sql(), token, {
+      currentPassword: data.currentPassword,
+      password: data.password,
+      confirm: data.confirm,
+    });
+    if (!res.ok) return { ok: false, error: res.error };
+    return { ok: true, message: res.message };
+  });
 export type { AuthedUser, AuthResult, LoginInput, RegisterInput };

@@ -111,34 +111,75 @@ export function Shell({
             <button
               onClick={handleSignOut}
               disabled={signingOut}
-              className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-600 transition hover:border-red-300 hover:text-red-700 disabled:opacity-60"
+              aria-label="Log out"
+              className="inline-flex min-h-[44px] items-center rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-600 transition hover:border-red-300 hover:text-red-700 disabled:opacity-60"
             >
-              {signingOut ? "Signing out…" : "Sign out"}
+              {signingOut ? "Signing out…" : "Log out"}
             </button>
             <button
+              type="button"
               onClick={() => setMenuOpen((v) => !v)}
-              className="grid h-9 w-9 place-items-center rounded-lg border border-stone-300 text-stone-600 transition hover:bg-stone-50 md:hidden"
+              aria-expanded={menuOpen}
+              aria-controls="app-module-menu"
               aria-label={menuOpen ? "Close menu" : "Open menu"}
+              className="grid h-[44px] w-[44px] place-items-center rounded-lg border border-stone-300 text-stone-600 transition hover:bg-stone-50 md:hidden"
             >
-              <span className="text-lg leading-none">{menuOpen ? "✕" : "☰"}</span>
+              {menuOpen ? (
+                <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
+                  <path d="M4 7h16M4 12h16M4 17h16" />
+                </svg>
+              )}
             </button>
           </div>
         </div>
         {/* Nav: on phones this is either a hamburger panel or the scroll row.
             Both are always reachable; large tap targets throughout. */}
         {menuOpen ? (
-          <nav className="grid grid-cols-1 gap-1 border-t border-stone-200 px-4 py-3 md:hidden">
+          <nav id="app-module-menu" aria-label="Modules" className="grid grid-cols-1 gap-1 border-t border-stone-200 px-4 py-3 md:hidden">
             {APP_NAV.map((item) => (
               <Link
                 key={item.to}
                 to={item.to}
                 onClick={() => setMenuOpen(false)}
-                className="flex items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-sm font-medium text-stone-700 transition hover:border-green-700 hover:bg-green-50 active:bg-green-100"
+                className="flex min-h-[44px] items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-sm font-medium text-stone-700 transition hover:border-green-700 hover:bg-green-50 active:bg-green-100"
               >
                 <span className="text-base">{item.emoji}</span>
                 {item.label}
               </Link>
             ))}
+            <div className="mt-1 grid grid-cols-1 gap-1 border-t border-stone-200 pt-2">
+              <Link
+                to="/account"
+                onClick={() => setMenuOpen(false)}
+                className="flex min-h-[44px] items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-sm font-medium text-stone-700 transition hover:border-green-700 hover:bg-green-50 active:bg-green-100"
+              >
+                <span className="text-base">👤</span>
+                Account
+              </Link>
+              <Link
+                to="/account"
+                search={{ mode: "reset" }}
+                onClick={() => setMenuOpen(false)}
+                className="flex min-h-[44px] items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-sm font-medium text-stone-700 transition hover:border-green-700 hover:bg-green-50 active:bg-green-100"
+              >
+                <span className="text-base">🔑</span>
+                Reset password
+              </Link>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                disabled={signingOut}
+                className="flex min-h-[44px] items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-sm font-medium text-stone-700 transition hover:border-red-300 hover:text-red-700 active:bg-red-50 disabled:opacity-60"
+                aria-label="Log out"
+              >
+                <span className="text-base">🚪</span>
+                {signingOut ? "Signing out…" : "Log out"}
+              </button>
+            </div>
           </nav>
         ) : (
           <nav

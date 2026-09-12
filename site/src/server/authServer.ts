@@ -312,3 +312,54 @@ export async function loginCore(
 }
 
 export type { postgres };
+// ---------------------------------------------------------------------------
+// Signed-in password change (Account page / menu link)
+// ---------------------------------------------------------------------------
+export const CHANGE_PASSWORD_RULES_MESSAGE = "Password must be 8 to 200 characters.";
+export const CHANGE_PASSWORD_MISMATCH_MESSAGE = "Passwords do not match.";
+export const CHANGE_PASSWORD_CURRENT_MESSAGE = "That current password isn't right.";
+export const CHANGE_PASSWORD_SUCCESS_MESSAGE =
+  "Your password was changed. Other signed-in devices were logged out.";
+
+export type ChangePasswordResult =
+  | { ok: true; message: string }
+  | { ok: false; error: string };
+
+/**
+ * changePasswordCore — verifies the current password for the user behind
+ * `currentToken`, sets the new password, and invalidates every OTHER session
+ * for that user (the current session stays valid so this device is not
+ * logged out). Injectable db + explicit token for tests.
+ */
+export async function changePasswordCore(
+  db: AuthDb,
+  currentToken: string | null,
+  raw: { currentPassword?: unknown; password?: unknown; confirm?: unknown }
+): Promise<ChangePasswordResult> {
+  const password = String(raw.password ?? "");
+  const confirm = String(raw.confirm ?? "");
+  const currentPassword = String(raw.currentPassword ?? "");
+  if (password.length < 8 || password.length > 200) {
+    return { ok: false, error: CHANGE_PASSWORD_RULES_MESSAGE };
+  }
+  if (password !== confirm) {
+    return { ok: false, error: CHANGE_PASSWORD_MISMATCH_MESSAGE };
+  }
+  if (!currentPassword || !currentToken) {
+    return { ok: false, error: CHANGE_PASSWORD_CURRENT_MESSAGE };
+  }
+  try {
+    const auth = await resolveAuthToken(db, currentToken);
+    if (!auth) return { ok: false, error: CHANGE_PASSWORD_CURRENT_MESSAGE };
+    const [row] = await db<[{ password_hash: string }]>`SELECT password_hash FROM users
+      WHERE id = ${auth.userId} LIMIT 1`;
+    if (!row || !verifyPassword(currentPassword, row.password_hash)) {
+      return { ok: false, error: CHANGE_PASSWORD_CURRENT_MESSAGE };
+    }
+    await db`UPDATE users SET password_hash = ${hashPassword(password)} WHERE id = ${auth.userId}`;
+    await db`DELETE FROM sessions WHERE user_id = ${auth.userId} AND token_hash <> ${sha256Hex(currentToken)}`;
+    return { ok: true, message: CHANGE_PASSWORD_SUCCESS_MESSAGE };
+  } catch {
+    return { ok: false, error: "We couldn't change that password. Please try again." };
+  }
+}
