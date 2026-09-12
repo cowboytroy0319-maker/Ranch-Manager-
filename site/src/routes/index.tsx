@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { COSTS_YTD, FEED_INVENTORY, LIVESTOCK, TOTAL_AU } from "~/data/sample";
 import { createCheckout } from "~/server/checkout";
@@ -13,11 +13,132 @@ const maxCost = Math.max(...COSTS_YTD.map((c) => c.ytd));
 const maxHead = Math.max(...LIVESTOCK.map((s) => s.head));
 
 function Nav() {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [authed, setAuthed] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  // Client-side session check only (drives which header actions render).
+  // Anonymous when signed out / DB unreachable — never blocks rendering.
+  useEffect(() => {
+    let cancelled = false;
+    void import("~/server/auth").then(async ({ getSession }) => {
+      try {
+        const s = await getSession();
+        if (!cancelled && s.authed) setAuthed(true);
+      } catch {
+        /* stay signed-out */
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const handleSignOut = async () => {
+    setSigningOut(true);
+    try {
+      const { logout } = await import("~/server/auth");
+      await logout();
+    } catch {
+      /* cookie cleared server-side on next load */
+    }
+    window.location.href = "/";
+  };
+  const mobileLinks = (
+    <>
+      {!authed && (
+        <Link
+          to="/login"
+          onClick={() => setMenuOpen(false)}
+          className="flex min-h-[44px] items-center gap-2 rounded-lg bg-green-700 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-green-600 active:bg-green-600"
+        >
+          <span aria-hidden="true">🔑</span>
+          Log in
+        </Link>
+      )}
+      {authed && (
+        <>
+          <Link
+            to="/account"
+            onClick={() => setMenuOpen(false)}
+            className="flex min-h-[44px] items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm font-medium text-stone-100 transition hover:bg-white/10"
+          >
+            <span aria-hidden="true">👤</span>
+            Account
+          </Link>
+          <Link
+            to="/dashboard"
+            onClick={() => setMenuOpen(false)}
+            className="flex min-h-[44px] items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm font-medium text-stone-100 transition hover:bg-white/10"
+          >
+            <span aria-hidden="true">🌅</span>
+            Daily Ops
+          </Link>
+        </>
+      )}
+      <Link
+        to="/demo"
+        onClick={() => setMenuOpen(false)}
+        className="flex min-h-[44px] items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm font-medium text-stone-100 transition hover:bg-white/10"
+      >
+        <span aria-hidden="true">🎛️</span>
+        View Live Demo
+      </Link>
+      <a
+        href="#modules"
+        onClick={() => setMenuOpen(false)}
+        className="flex min-h-[44px] items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm font-medium text-stone-100 transition hover:bg-white/10"
+      >
+        What it covers
+      </a>
+      <a
+        href="#who"
+        onClick={() => setMenuOpen(false)}
+        className="flex min-h-[44px] items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm font-medium text-stone-100 transition hover:bg-white/10"
+      >
+        Who it&apos;s for
+      </a>
+      <a
+        href="#pricing"
+        onClick={() => setMenuOpen(false)}
+        className="flex min-h-[44px] items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm font-medium text-stone-100 transition hover:bg-white/10"
+      >
+        Pricing
+      </a>
+      <Link
+        to="/blog"
+        onClick={() => setMenuOpen(false)}
+        className="flex min-h-[44px] items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm font-medium text-stone-100 transition hover:bg-white/10"
+      >
+        Guides
+      </Link>
+      {!authed && (
+        <Link
+          to="/register"
+          onClick={() => setMenuOpen(false)}
+          className="flex min-h-[44px] items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm font-medium text-stone-100 transition hover:bg-white/10"
+        >
+          <span aria-hidden="true">✨</span>
+          Create account
+        </Link>
+      )}
+      {authed && (
+        <button
+          type="button"
+          onClick={handleSignOut}
+          disabled={signingOut}
+          aria-label="Log out"
+          className="flex min-h-[44px] items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 text-sm font-medium text-stone-100 transition hover:bg-white/10 disabled:opacity-60"
+        >
+          <span aria-hidden="true">🚪</span>
+          {signingOut ? "Signing out…" : "Log out"}
+        </button>
+      )}
+    </>
+  );
   return (
-    <header className="sticky top-0 z-40 border-b border-white/10 bg-green-950/90 backdrop-blur">
-      <div className="container-x flex h-16 items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="grid h-9 w-9 place-items-center rounded-lg bg-green-700">
+    <header className="sticky top-0 z-40 overflow-x-clip border-b border-white/10 bg-green-950/90 backdrop-blur">
+      <div className="container-x flex h-16 min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-green-700">
             <svg viewBox="0 0 24 24" className="h-5 w-5 text-white" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="9" />
               <path d="M6 15c2 2 4 2 6 0s4-3 6-2" />
@@ -25,35 +146,75 @@ function Nav() {
               <circle cx="16" cy="9" r="1" fill="currentColor" />
             </svg>
           </div>
-          <span className="text-lg font-bold text-white">Ranch Manager Pro</span>
+          <span className="truncate text-lg font-bold text-white">Ranch Manager Pro</span>
         </div>
-        <nav className="hidden items-center gap-7 text-sm font-medium text-stone-200 md:flex">
+        <nav className="hidden min-w-0 items-center gap-7 overflow-hidden text-sm font-medium text-stone-200 lg:flex" aria-label="Site sections">
           <a href="#modules" className="hover:text-white">What it covers</a>
-          <a href="#who" className="hover:text-white">Who it's for</a>
-          <Link to="/livestock" className="hover:text-white">Livestock</Link>
-          <Link to="/feed" className="hover:text-white">Feed &amp; Hay</Link>
-          <Link to="/pasture" className="hover:text-white">Pasture</Link>
-          <Link to="/equipment" className="hover:text-white">Equipment</Link>
-          <Link to="/expenses" className="hover:text-white">Expenses</Link>
-          <Link to="/employees" className="hover:text-white">Employees</Link>
-          <Link to="/tax-exemptions" className="hover:text-white">Tax &amp; Exemptions</Link>
+          <a href="#who" className="hover:text-white">Who it&apos;s for</a>
           <Link to="/dashboard" className="hover:text-white">Daily Ops</Link>
           <Link to="/blog" className="hover:text-white">Guides</Link>
           <a href="#pricing" className="hover:text-white">Pricing</a>
         </nav>
-        <div className="flex items-center gap-2">
-          <Link to="/livestock" className="btn-ghost !py-2.5">Livestock</Link>
-          <Link to="/feed" className="btn-ghost !py-2.5">Feed &amp; Hay</Link>
-          <Link to="/pasture" className="btn-ghost !py-2.5">Pasture</Link>
-          <Link to="/equipment" className="btn-ghost !py-2.5">Equipment</Link>
-          <Link to="/employees" className="btn-ghost !py-2.5">Employees</Link>
-          <Link to="/tax-exemptions" className="btn-ghost !py-2.5">Tax &amp; Exemptions</Link>
-          <Link to="/dashboard" className="btn-ghost !py-2.5">Daily Ops</Link>
-          <Link to="/demo" className="btn-primary !py-2.5">
-            View Live Demo
-          </Link>
+        <div className="flex shrink-0 items-center gap-2">
+          {authed ? (
+            <>
+              <Link
+                to="/dashboard"
+                className="hidden min-h-[44px] items-center rounded-lg bg-green-700 px-4 text-sm font-semibold text-white transition hover:bg-green-600 sm:inline-flex"
+              >
+                Open app
+              </Link>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                disabled={signingOut}
+                aria-label="Log out"
+                className="inline-flex min-h-[44px] items-center rounded-lg border border-white/25 px-3 text-sm font-medium text-stone-100 transition hover:bg-white/10 disabled:opacity-60 sm:px-4"
+              >
+                {signingOut ? "Signing out…" : "Log out"}
+              </button>
+            </>
+          ) : (
+            <>
+              <Link
+                to="/register"
+                className="hidden min-h-[44px] items-center text-sm font-medium text-stone-200 transition hover:text-white sm:inline-flex sm:px-1"
+              >
+                Create account
+              </Link>
+              <Link
+                to="/login"
+                className="inline-flex min-h-[44px] items-center rounded-lg bg-green-700 px-4 text-sm font-semibold text-white transition hover:bg-green-600 sm:px-5"
+              >
+                Log in
+              </Link>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-expanded={menuOpen}
+            aria-controls="site-menu"
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            className="grid h-[44px] w-[44px] shrink-0 place-items-center rounded-lg border border-white/20 text-white transition hover:bg-white/10 lg:hidden"
+          >
+            {menuOpen ? (
+              <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
+                <path d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+            )}
+          </button>
         </div>
       </div>
+      {menuOpen && (
+        <nav id="site-menu" aria-label="Site menu" className="grid grid-cols-1 gap-1.5 border-t border-white/10 px-5 py-3 sm:px-8 lg:hidden">
+          {mobileLinks}
+        </nav>
+      )}
     </header>
   );
 }
@@ -75,13 +236,16 @@ function Hero() {
             operational visibility and cost reporting for a family ranch, a
             grazing farm, or a 5,000-head commercial operation.
           </p>
-          <div className="mt-8 flex flex-wrap gap-3">
+          <div className="mt-8 flex flex-wrap items-center gap-3">
             <Link to="/demo" className="btn-primary !bg-amber-500 !text-green-950 hover:!bg-amber-400">
               View Live Demo →
             </Link>
             <a href="#modules" className="btn-outline !border-white/30 !bg-white/5 !text-white hover:!bg-white/10">
               See what it covers
             </a>
+            <Link to="/register" className="text-sm font-semibold text-green-300 underline-offset-4 transition hover:text-white hover:underline sm:hidden">
+              New here? Create account →
+            </Link>
           </div>
           <div className="mt-10 flex flex-wrap gap-x-8 gap-y-3 text-sm text-stone-300">
             <span>✓ Built for one ranch or many sites</span>
