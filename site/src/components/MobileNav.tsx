@@ -122,7 +122,7 @@ export function QuickAddSheet({
               key={item.to}
               to={item.to}
               onClick={onClose}
-              className="flex min-h-11 items-center gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-sm font-medium text-stone-800 transition hover:border-green-700 hover:bg-green-50 active:bg-green-100"
+              className="flex min-h-[44px] items-center gap-2 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-sm font-medium text-stone-800 transition hover:border-green-700 hover:bg-green-50 active:bg-green-100"
             >
               <span className="text-lg">{item.emoji}</span>
               <span className="min-w-0 text-left">{item.label}</span>
@@ -134,9 +134,19 @@ export function QuickAddSheet({
   );
 }
 
+async function doBottomNavSignOut(): Promise<void> {
+  try {
+    const { logout } = await import("~/server/auth");
+    await logout();
+  } catch {
+    /* cookie cleared server-side on next load; still navigate home */
+  }
+  window.location.href = "/";
+}
 /**
  * Persistent mobile bottom nav. On phones this replaces the top-scrolling nav
  * (the hamburger + row are hidden on small screens); desktop is unchanged.
+ * The More drawer includes Account, Reset password, and Log out.
  */
 export function MobileBottomNav() {
   const { pathname } = useLocation();
@@ -165,7 +175,7 @@ export function MobileBottomNav() {
       <Link
         key={item.to}
         to={item.to}
-        className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1.5 text-[11px] font-semibold transition ${
+        className={`flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1.5 text-[11px] font-semibold transition ${
           active ? "text-green-800" : "text-stone-600 hover:bg-stone-100"
         }`}
       >
@@ -196,7 +206,7 @@ export function MobileBottomNav() {
           {primary}
           <button
             onClick={() => setQaOpen(true)}
-            className="flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border border-green-700/40 bg-green-50 px-1 py-1.5 text-[11px] font-semibold text-green-800 transition hover:bg-green-100 active:bg-green-100"
+            className="flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border border-green-700/40 bg-green-50 px-1 py-1.5 text-[11px] font-semibold text-green-800 transition hover:bg-green-100 active:bg-green-100"
             aria-label="Quick Add"
           >
             <span className="text-lg leading-none">＋</span>
@@ -206,7 +216,7 @@ export function MobileBottomNav() {
             onClick={toggleMore}
             aria-label={moreOpen ? "Close more sections" : "Open more sections"}
             aria-expanded={moreOpen}
-            className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1.5 text-[11px] font-semibold transition ${
+            className={`flex min-h-[44px] flex-1 flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1.5 text-[11px] font-semibold transition ${
               isQaActive || moreOpen ? "text-green-800" : "text-stone-600 hover:bg-stone-100"
             }`}
           >
@@ -223,7 +233,7 @@ export function MobileBottomNav() {
               <Link
                 key={item.to}
                 to={item.to}
-                className={`flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                className={`flex min-h-[44px] items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition ${
                   pathname === item.to
                     ? "bg-green-800 text-white"
                     : "bg-stone-50 text-stone-700 hover:bg-stone-100"
@@ -233,6 +243,30 @@ export function MobileBottomNav() {
                 {item.label}
               </Link>
             ))}
+            <Link
+              to="/account"
+              className="flex min-h-[44px] items-center gap-2 rounded-lg bg-stone-50 px-3 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-100"
+            >
+              <span className="text-base">👤</span>
+              Account
+            </Link>
+            <Link
+              to="/account"
+              search={{ mode: "reset" }}
+              className="flex min-h-[44px] items-center gap-2 rounded-lg bg-stone-50 px-3 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-100"
+            >
+              <span className="text-base">🔑</span>
+              Reset password
+            </Link>
+            <button
+              type="button"
+              onClick={() => void doBottomNavSignOut()}
+              className="flex min-h-[44px] items-center gap-2 rounded-lg bg-stone-50 px-3 py-2.5 text-sm font-medium text-stone-700 hover:bg-stone-100"
+              aria-label="Log out"
+            >
+              <span className="text-base">🚪</span>
+              Log out
+            </button>
           </div>
         )}
       </nav>
