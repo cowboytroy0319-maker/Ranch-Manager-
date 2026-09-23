@@ -77,6 +77,27 @@ export type FeedData = {
   feed: FeedItem[];
   groups: HerdGroupRef[];
   usage: UsageEntry[]; // most recent first
+  /** Restock history (most recent first). Older databases predate restock_log,
+   *  so this is always present client-side but may be empty. */
+  restocks: RestockEntry[];
+};
+
+/** One restock_log row — the editable/voidable restock history entry. */
+export type RestockEntry = {
+  id: number;
+  restock_date: string; // YYYY-MM-DD
+  item_kind: "hay" | "feed";
+  hay_item_id: number | null;
+  feed_item_id: number | null;
+  /** Human label resolved server-side (hay type/cutting or feed name). */
+  item_label: string;
+  quantity: number;
+  unit: string;
+  total_cost_cents: number | null;
+  vendor: string | null;
+  notes: string | null;
+  /** True when a linked hay_feed expense exists for this restock. */
+  has_expense: boolean;
 };
 
 /** Minimal herd-group reference (full type lives in types/livestock). */

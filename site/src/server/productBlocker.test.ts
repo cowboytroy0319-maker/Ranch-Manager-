@@ -43,7 +43,7 @@ import {
 } from "./expenses";
 import {
   deleteRestockCore,
-  INVENTORY_BELOW_ZERO_ERROR,
+  inventoryBelowZeroMessage,
   parseRestockEditInput,
   parseRestockInput,
   restockItemCore,
@@ -607,6 +607,208 @@ describe("updateRestock / deleteRestock — consistent ledger + inventory math",
 });
 
 // ---------------------------------------------------------------------------
+// 5c. The "Total cost paid" field's five promises, from the DB's point of view
+//     (owner priority 4 — the field is OPTIONAL, and each outcome is exact):
+//       a. cost entered  → inventory rises + exactly ONE linked expense
+//       b. cost blank    → inventory rises + ZERO expenses
+//       c. same client_request_id again, either way → no double inventory and
+//          no double expense (blank-cost variant, the one the lead called out)
+//       d. editing the cost twice → the linked expense stays exactly ONE row
+//       e. void → inventory reversed + the linked expense removed
+// ---------------------------------------------------------------------------
+
+describe("restock cost field — the exact outcome of each entry", () => {
+  test("cost entered: inventory rises and exactly ONE linked hay_feed expense exists", async () => {
+    const res = await restockItemCore(db, opAId, {
+      client_request_id: `cost-field-with-${Date.now()}`,
+      item_kind: "hay",
+      item_id: hayAId,
+      quantity: 25,
+      unit: "bales",
+      restock_date: inMonth(),
+      total_cost_cents: 62500, // "Total cost paid" 625.00
+      vendor: "Cost Field Co",
+      notes: null,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error(res.error);
+    expect(res.expense_created).toBe(true);
+
+    const [hay] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayAId}`;
+    expect(Number(hay.quantity)).toBe(125); // 100 + 25
+    const linked = await db<{ id: number; category: string; amount_cents: number }[]>`
+      SELECT id, category, amount_cents FROM expenses
+      WHERE source_type='restock' AND source_id=${res.id} AND operation_id=${opAId}`;
+    expect(linked.length).toBe(1); // exactly one — never two
+    expect(linked[0].category).toBe("hay_feed");
+    expect(linked[0].amount_cents).toBe(62500);
+
+    await db`DELETE FROM expenses WHERE source_type='restock' AND source_id=${res.id} AND operation_id=${opAId}`;
+    await db`DELETE FROM restock_log WHERE id=${res.id}`;
+    await db`UPDATE hay_inventory SET quantity = 100 WHERE id=${hayAId}`;
+  });
+
+  test("cost blank: inventory rises, ZERO expenses, and the restock row says no cost", async () => {
+    const res = await restockItemCore(db, opAId, {
+      client_request_id: `cost-field-blank-${Date.now()}`,
+      item_kind: "hay",
+      item_id: hayAId,
+      quantity: 12,
+      unit: "bales",
+      restock_date: inMonth(),
+      total_cost_cents: null,
+      vendor: null,
+      notes: "no receipt yet",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error(res.error);
+    expect(res.expense_created).toBe(false);
+
+    const [hay] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayAId}`;
+    expect(Number(hay.quantity)).toBe(112); // 100 + 12
+    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${res.id} AND operation_id=${opAId}`).length).toBe(0);
+    const [log] = await db<[{ total_cost_cents: number | null }]>`SELECT total_cost_cents FROM restock_log WHERE id=${res.id}`;
+    expect(log.total_cost_cents === null).toBe(true);
+    // The expense ledger as a whole gained nothing.
+    const ledger = await db<[{ count: string }]>`SELECT count(*)::text AS count FROM expenses
+      WHERE operation_id=${opAId} AND source_type='restock' AND source_id=${res.id}`;
+    expect(ledger[0].count).toBe("0");
+
+    await db`DELETE FROM restock_log WHERE id=${res.id}`;
+    await db`UPDATE hay_inventory SET quantity = 100 WHERE id=${hayAId}`;
+  });
+
+  test("double-submit with a BLANK cost and the same client_request_id: one inventory bump, zero expenses", async () => {
+    const reqId = `cost-field-blank-retry-${Date.now()}`;
+    const payload = {
+      client_request_id: reqId,
+      item_kind: "feed" as const,
+      item_id: feedAId,
+      quantity: 400,
+      unit: "lbs",
+      restock_date: inMonth(),
+      total_cost_cents: null,
+      vendor: null,
+      notes: null,
+    };
+    const first = await restockItemCore(db, opAId, payload);
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.error);
+    const [feedMid] = await db<[{ quantity: string }]>`SELECT quantity FROM feed_inventory WHERE id=${feedAId}`;
+    expect(Number(feedMid.quantity)).toBe(2400); // 2000 + 400
+
+    // The double-submit: same key, blank cost again.
+    const retry = await restockItemCore(db, opAId, payload);
+    expect(retry.ok).toBe(true);
+    if (!retry.ok) throw new Error(retry.error);
+    expect(retry.duplicate).toBe(true);
+    expect(retry.expense_created).toBe(false);
+
+    const [feedAfter] = await db<[{ quantity: string }]>`SELECT quantity FROM feed_inventory WHERE id=${feedAId}`;
+    expect(Number(feedAfter.quantity)).toBe(2400); // NOT 2800
+    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${first.id} AND operation_id=${opAId}`).length).toBe(0);
+    expect((await db`SELECT id FROM restock_log WHERE client_request_id=${reqId} AND operation_id=${opAId}`).length).toBe(1);
+
+    await db`DELETE FROM restock_log WHERE id=${first.id}`;
+    await db`UPDATE feed_inventory SET quantity = 2000 WHERE id=${feedAId}`;
+  });
+
+  test("editing the cost twice keeps exactly ONE linked expense (no duplicate rows, no stale amount)", async () => {
+    const res = await restockItemCore(db, opAId, {
+      client_request_id: `cost-field-edit-${Date.now()}`,
+      item_kind: "feed",
+      item_id: feedAId,
+      quantity: 100,
+      unit: "lbs",
+      restock_date: inMonth(),
+      total_cost_cents: 10000,
+      vendor: "Edit Twice Co",
+      notes: null,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error(res.error);
+    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${res.id} AND operation_id=${opAId}`).length).toBe(1);
+
+    // Cost 100.00 → 175.50, then 175.50 → 200.00: still ONE row, latest amount.
+    for (const cents of [17550, 20000]) {
+      const edited = await updateRestockCore(db, opAId, {
+        id: res.id,
+        quantity: 100,
+        unit: "lbs",
+        restock_date: inMonth(),
+        total_cost_cents: cents,
+        vendor: "Edit Twice Co",
+        notes: null,
+      });
+      expect(edited.ok).toBe(true);
+      const rows = await db<{ id: number; amount_cents: number }[]>`
+        SELECT id, amount_cents FROM expenses
+        WHERE source_type='restock' AND source_id=${res.id} AND operation_id=${opAId}`;
+      expect(rows.length).toBe(1);
+      expect(rows[0].amount_cents).toBe(cents);
+    }
+
+    // Blanking it now removes ONLY the expense — inventory and the restock stay.
+    const blanked = await updateRestockCore(db, opAId, {
+      id: res.id,
+      quantity: 100,
+      unit: "lbs",
+      restock_date: inMonth(),
+      total_cost_cents: null,
+      vendor: null,
+      notes: null,
+    });
+    expect(blanked.ok).toBe(true);
+    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${res.id} AND operation_id=${opAId}`).length).toBe(0);
+    const [feed] = await db<[{ quantity: string }]>`SELECT quantity FROM feed_inventory WHERE id=${feedAId}`;
+    expect(Number(feed.quantity)).toBe(2100); // still 2000 + 100
+
+    await db`DELETE FROM restock_log WHERE id=${res.id}`;
+    await db`UPDATE feed_inventory SET quantity = 2000 WHERE id=${feedAId}`;
+  });
+
+  test("void reverses the inventory and removes the linked expense (then removes it from history)", async () => {
+    const res = await restockItemCore(db, opAId, {
+      client_request_id: `cost-field-void-${Date.now()}`,
+      item_kind: "hay",
+      item_id: hayAId,
+      quantity: 30,
+      unit: "bales",
+      restock_date: inMonth(),
+      total_cost_cents: 45000,
+      vendor: "Void Co",
+      notes: null,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error(res.error);
+    const [hayMid] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayAId}`;
+    expect(Number(hayMid.quantity)).toBe(130);
+    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${res.id} AND operation_id=${opAId}`).length).toBe(1);
+
+    const del = await deleteRestockCore(db, opAId, res.id);
+    expect(del.ok).toBe(true);
+    if (!del.ok) throw new Error(del.error);
+    expect(del.linked_expense_removed).toBe(true);
+    const [hay] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayAId}`;
+    expect(Number(hay.quantity)).toBe(100); // 130 − 30
+    expect((await db`SELECT id FROM expenses WHERE source_type='restock' AND source_id=${res.id} AND operation_id=${opAId}`).length).toBe(0);
+    expect((await db`SELECT id FROM restock_log WHERE id=${res.id}`).length).toBe(0);
+  });
+
+  test("the refusal message names the units in use (pure — no DB)", () => {
+    const msg = inventoryBelowZeroMessage("bales", 4, -5);
+    expect(msg).toContain("bales");
+    expect(msg).toContain("1 bale from this restock has already been used");
+    expect(msg).toContain("Nothing was changed");
+    // A unit-less row still reads plainly, and singular/plural both read right.
+    expect(inventoryBelowZeroMessage("", 2, -3)).toContain("units");
+    expect(inventoryBelowZeroMessage("tons", 1, -2)).toContain("1 ton from this restock has already been used");
+    expect(inventoryBelowZeroMessage("lbs", 0, -600)).toContain("600 lbs from this restock have already been used");
+    expect(inventoryBelowZeroMessage("tons", 1.5, -2)).toContain("0.5 tons");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 5b. Inventory safety — a correction that would push stock below zero is
 //     BLOCKED with a plain-language error (owner rule), never clamped to 0,
 //     and nothing applies partially: inventory, restock_log, and the linked
@@ -648,7 +850,12 @@ describe("inventory safety — corrections that would go below zero are blocked,
       notes: null,
     });
     expect(edit.ok).toBe(false);
-    if (!edit.ok) expect(edit.error).toBe(INVENTORY_BELOW_ZERO_ERROR);
+    if (!edit.ok) {
+      // The refusal names the units in use (bales) and the numbers behind it.
+      expect(edit.error).toBe(inventoryBelowZeroMessage("bales", 4, -5));
+      expect(edit.error).toContain("bales");
+      expect(edit.error).toContain("Nothing was changed");
+    }
 
     // Nothing moved: inventory unchanged, the logged quantity unchanged.
     const [hay] = await db<[{ quantity: string }]>`SELECT quantity FROM hay_inventory WHERE id=${hayAId}`;
@@ -707,7 +914,12 @@ describe("inventory safety — corrections that would go below zero are blocked,
     // Deleting would reverse 300 lbs that are already fed → must be blocked.
     const del = await deleteRestockCore(db, opAId, res.id);
     expect(del.ok).toBe(false);
-    if (!del.ok) expect(del.error).toBe(INVENTORY_BELOW_ZERO_ERROR);
+    if (!del.ok) {
+      // Same rule on a void: the message names the units in use (lbs).
+      expect(del.error).toBe(inventoryBelowZeroMessage("lbs", 50, -300));
+      expect(del.error).toContain("lbs");
+      expect(del.error).toContain("Nothing was changed");
+    }
 
     // Nothing moved: inventory unchanged, the log row still exists.
     const [feed] = await db<[{ quantity: string }]>`SELECT quantity FROM feed_inventory WHERE id=${feedAId}`;

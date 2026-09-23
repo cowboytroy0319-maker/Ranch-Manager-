@@ -7,6 +7,25 @@
 // ============================================================================
 import type { RestockInput } from "~/server/feed";
 
+// ---------------------------------------------------------------------------
+// The exact owner-facing wording of the cost field (owner priority 4).
+// The label is deliberately the owner's own words — "Total cost paid" — and it
+// lives here so the add restock form, the edit restock form, and the tests all
+// read the SAME string (a rename can never drift out of one of them).
+// The field stays OPTIONAL: the helper text describes both outcomes honestly.
+// ---------------------------------------------------------------------------
+
+/** The visible label of the cost field. */
+export const RESTOCK_COST_LABEL = "Total cost paid";
+
+/** Helper under the cost field — says exactly what happens either way. */
+export const RESTOCK_COST_HELP =
+  "Optional. Enter what you paid and it records a linked Hay & feed expense. Leave it blank and only the inventory changes.";
+
+/** Helper under the cost field in the EDIT form (same rule, edit wording). */
+export const RESTOCK_COST_EDIT_HELP =
+  "Optional. With a cost the linked expense stays at exactly one row; blank removes it. Leaving it blank still updates inventory.";
+
 export function newClientRequestId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -65,4 +84,30 @@ export function restockResultMessage(res: RestockResponse): { kind: "success" | 
       ? "Already recorded — inventory unchanged."
       : "Inventory updated — no expense created (no cost entered).",
   };
+}
+
+/** Parse the dollars text field of the edit-restock form into cents-or-null.
+ *  Pure: blank/zero/negative-or-garbage → null (no linked expense); the
+ *  server validator still owns the final say on quantity/date. */
+export function parseEditCostDollars(raw: string): number | null {
+  const t = (raw ?? "").trim();
+  if (t === "") return null;
+  const cents = Math.round(Number(t) * 100);
+  if (!Number.isFinite(cents) || cents <= 0) return null;
+  return cents;
+}
+
+/** Outcome message after a successful updateRestock — must not overclaim:
+ *  only reports a linked expense when one actually exists. Pure for tests. */
+export function editRestockSavedMessage(hasExpense: boolean, costCents: number | null): string {
+  return hasExpense || (costCents != null && costCents > 0)
+    ? "Restock updated — inventory and linked expense now match."
+    : "Restock updated — no linked expense (no cost entered).";
+}
+
+/** Outcome message after a successful deleteRestock. Pure for tests. */
+export function voidRestockMessage(linkedExpenseRemoved: boolean): string {
+  return linkedExpenseRemoved
+    ? "Restock voided — inventory reversed and the linked expense removed."
+    : "Restock voided — inventory reversed.";
 }

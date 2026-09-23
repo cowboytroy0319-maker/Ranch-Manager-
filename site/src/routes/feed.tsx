@@ -3,20 +3,21 @@ import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
 import { useMemo, useState, useEffect } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
-import { FeedFormModal, HayFormModal, LogUsageModal, RestockModal, hayLabel } from "~/components/feed/FeedModals";
+import { EditRestockModal, FeedFormModal, HayFormModal, LogUsageModal, RestockModal, VoidRestockModal, hayLabel } from "~/components/feed/FeedModals";
 import { getFeedData } from "~/server/feed";
 import { useAddIntent } from "~/components/useAddIntent";
 import { TemplatesLink } from "~/components/TemplatesLink";
 import {
   USAGE_RATE_WINDOW_DAYS,
-  fmtQty,
   fmtDollars,
+  fmtQty,
   hayDaysLeftForItem,
   hayDaysLeftOverall,
   hayTons,
   lowStockItems,
   type FeedItem,
   type HayItem,
+  type RestockEntry,
 } from "~/types/feed";
 
 export const Route = createFileRoute("/feed")({
@@ -51,6 +52,9 @@ function FeedPage() {
   const [restockOpen, setRestockOpen] = useState(false);
   const [restockSel, setRestockSel] = useState<{ kind: "hay" | "feed"; id: number } | null>(null);
   const [restockMessage, setRestockMessage] = useState<string | null>(null);
+  // Per-record restock history actions (Edit → updateRestock, Void → deleteRestock).
+  const [editingRestock, setEditingRestock] = useState<RestockEntry | null>(null);
+  const [voidingRestock, setVoidingRestock] = useState<RestockEntry | null>(null);
 
   const openUsage = (sel: { kind: "hay" | "feed"; id: number } | null) => {
     setUsageSel(sel);
@@ -440,6 +444,48 @@ function FeedPage() {
         )}
       </Card>
 
+      {/* Restock history — per-record Edit (updateRestock) + Void (deleteRestock) */}
+      <Card>
+        <CardTitle
+          title="Restock history"
+          sub={data.restocks.length ? `${data.restocks.length} restocks on record · latest first` : "Every restock lands here with Edit and Void"}
+        />
+        {data.restocks.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-stone-300 p-4 text-center text-sm text-stone-500">
+            No restocks yet — hit “Restock” on any stack or item after a delivery.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {data.restocks.slice(0, 20).map((r) => (
+              <div key={r.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-stone-100 px-3 py-2.5">
+                <span className="w-20 shrink-0 text-xs font-semibold text-stone-500">{r.restock_date}</span>
+                <Badge tone={r.item_kind === "hay" ? "green" : "blue"}>{r.item_kind}</Badge>
+                <span className="w-52 shrink-0 truncate text-sm font-medium text-stone-800">{r.item_label}</span>
+                <span className="shrink-0 text-sm font-semibold text-stone-800">+{fmtQty(r.quantity, r.unit)}</span>
+                <span className="min-w-0 flex-1 truncate text-sm text-stone-600">
+                  {r.total_cost_cents != null ? fmtDollars(r.total_cost_cents) : "no cost"}
+                  {r.vendor ? ` · ${r.vendor}` : ""}
+                  {r.has_expense ? " · linked expense" : ""}
+                  {r.notes ? ` · ${r.notes}` : ""}
+                </span>
+                <button
+                  onClick={() => setEditingRestock(r)}
+                  className="min-h-11 rounded-lg border border-stone-200 px-3 py-2 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => setVoidingRestock(r)}
+                  className="min-h-11 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50"
+                >
+                  Void
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
       {/* Restock / add flows */}
       {addHayOpen || editingHay ? (
         <HayFormModal
@@ -479,6 +525,30 @@ function FeedPage() {
           onClose={() => setRestockOpen(false)}
           onSaved={(message) => {
             setRestockOpen(false);
+            setRestockMessage(message);
+            refresh();
+          }}
+        />
+      )}
+      {editingRestock && (
+        <EditRestockModal
+          key={`edit-restock-${editingRestock.id}`}
+          entry={editingRestock}
+          onClose={() => setEditingRestock(null)}
+          onSaved={(message) => {
+            setEditingRestock(null);
+            setRestockMessage(message);
+            refresh();
+          }}
+        />
+      )}
+      {voidingRestock && (
+        <VoidRestockModal
+          key={`void-restock-${voidingRestock.id}`}
+          entry={voidingRestock}
+          onClose={() => setVoidingRestock(null)}
+          onVoided={(message) => {
+            setVoidingRestock(null);
             setRestockMessage(message);
             refresh();
           }}
