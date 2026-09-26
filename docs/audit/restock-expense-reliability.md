@@ -154,10 +154,13 @@ but the Expenses page's own read is broken there too (§8, root cause 2). `/expe
 `e.paid_by, e.source_type, e.source_id, (e.source_type IS NOT NULL) AS linked`
 (`src/server/expenses.ts:93-95`), columns that do not exist in production.
 
-> Not completed: the screenshot pair `04-expenses-after-restock-375.png` /
-> `05-expenses-after-reload-375.png` (server was reachable and the script is written, but the run did
-> not get far enough before the session budget ended — see §9 "not completed"). The claim above is
-> therefore based on the DB row + the captured 200 response, **not** on a screenshot of `/expenses`.
+> Caveat on evidence: the two screenshots `04-expenses-after-restock-375.png` and
+> `05-expenses-after-reload-375.png` **were produced** (both 375×812, 63,626 bytes, byte-identical to
+> each other — i.e. the page rendered the same thing before and after the reload), but the run's
+> machine-readable JSON output was lost to a shell-session backlog and the images were not read back
+> within the session budget. The claim above therefore rests on the DB row + the captured 200 response
+> (`expense_created:true`), **not** on a verified reading of those two images. Reading them back is the
+> first cheap step of Stage 2.
 
 ---
 
