@@ -11,24 +11,79 @@
 // ============================================================================
 import { useState } from "react";
 import { Card } from "~/components/ui";
-import { logUsage, restockItem, saveFeedItem, saveHay, type FeedItemInput, type HayInput } from "~/server/feed";
+import { deleteRestock, logUsage, restockItem, saveFeedItem, saveHay, updateRestock, type FeedItemInput, type HayInput } from "~/server/feed";
 import {
   FEED_CATEGORIES,
   FEED_UNITS,
   HAY_TYPES,
   HAY_UNITS,
+  fmtDollars,
   fmtQty,
   type FeedItem,
   type HayItem,
   type HerdGroupRef,
+  type RestockEntry,
 } from "~/types/feed";
-import { buildRestockSubmit, newClientRequestId, restockResultMessage } from "./restockUI";
+import { buildRestockSubmit, editRestockSavedMessage, newClientRequestId, parseEditCostDollars, restockResultMessage, voidRestockMessage, RESTOCK_COST_EDIT_HELP, RESTOCK_COST_HELP, RESTOCK_COST_LABEL } from "./restockUI";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
 const labelCls = "block text-xs font-semibold uppercase tracking-wide text-stone-500";
 const inputCls =
   "mt-1 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 outline-none transition focus:border-green-700 focus:ring-2 focus:ring-green-700/20";
+
+// Owner priority 4: the cost field must be unmissable on a phone — a 44 px+
+// tap target (min-h-11), full width, 16px text (iOS won't zoom the page when it
+// focuses), and its own dollar sign so it reads as money at a glance.
+const costInputCls =
+  "min-h-11 w-full rounded-lg border border-stone-300 bg-white py-2 pl-8 pr-3 text-base text-stone-900 outline-none transition focus:border-green-700 focus:ring-2 focus:ring-green-700/20";
+
+/** The owner's "Total cost paid" field. Rendered in the SAME visible block as
+ *  quantity and date (and full-width on desktop too) so it is never hidden
+ *  behind a collapsed section or below the fold. Optional by design: the helper
+ *  text says both outcomes — a cost records and links the expense, blank only
+ *  touches inventory. */
+function CostPaidField({
+  id,
+  value,
+  onChange,
+  help,
+}: {
+  id: string;
+  value: string;
+  onChange: (next: string) => void;
+  help: string;
+}) {
+  return (
+    <div className="rounded-xl border border-green-700/30 bg-green-50/70 p-3 sm:col-span-2">
+      <label htmlFor={id} className="block text-sm font-semibold text-green-900">
+        {RESTOCK_COST_LABEL}
+      </label>
+      <div className="relative mt-1">
+        <span aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-base font-semibold text-stone-500">
+          $
+        </span>
+        <input
+          id={id}
+          name="total_cost_paid"
+          type="number"
+          min={0}
+          step={0.01}
+          inputMode="decimal"
+          className={costInputCls}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="0.00"
+          aria-describedby={`${id}-help`}
+        />
+      </div>
+      <p id={`${id}-help`} className="mt-1 text-xs leading-snug text-stone-600">
+        {help}
+      </p>
+    </div>
+  );
+}
+
 
 function Field({
   label,
@@ -589,7 +644,7 @@ export function RestockModal({
   return (
     <Modal
       title="Restock hay / feed"
-      sub="Adds quantity on hand — with a cost, it also records the linked expense"
+      sub={`Adds quantity on hand — fill in ${RESTOCK_COST_LABEL} and it also records the linked expense`}
       onClose={onClose}
       footer={
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
@@ -644,17 +699,12 @@ export function RestockModal({
           <Field label="Restock date *">
             <input type="date" className={inputCls} value={restockDate} onChange={(e) => setRestockDate(e.target.value)} required />
           </Field>
-          <Field label="Total cost ($)">
-            <input
-              type="number" min={0} step={0.01}
-              inputMode="decimal"
-              className={inputCls}
-              value={costDollars}
-              onChange={(e) => setCostDollars(e.target.value)}
-              placeholder="0.00"
-            />
-            <p className="mt-1 text-xs text-stone-500">Optional — with a cost, a Hay &amp; feed expense is recorded and linked to this restock.</p>
-          </Field>
+          <CostPaidField
+            id="restock-total-cost-paid"
+            value={costDollars}
+            onChange={setCostDollars}
+            help={RESTOCK_COST_HELP}
+          />
           <Field label="Vendor">
             <input className={inputCls} value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="Mule Shoe Dairy…" />
           </Field>
@@ -663,6 +713,173 @@ export function RestockModal({
           <textarea className={inputCls} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery, quality, stack location…" />
         </Field>
       </form>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Edit restock — change qty/cost/vendor/date/notes on an existing restock_log
+// row. The server recomputes the inventory delta and upserts the linked
+// expense, so the history and ledger stay consistent (still exactly one).
+// ---------------------------------------------------------------------------
+
+export function EditRestockModal({
+  entry,
+  onClose,
+  onSaved,
+}: {
+  entry: RestockEntry;
+  onClose: () => void;
+  /** Called with the exact user-facing outcome message. */
+  onSaved: (message: string) => void;
+}) {
+  const [quantity, setQuantity] = useState<number | "">(entry.quantity);
+  const [restockDate, setRestockDate] = useState(entry.restock_date);
+  const [costDollars, setCostDollars] = useState(
+    entry.total_cost_cents != null ? (entry.total_cost_cents / 100).toFixed(2) : ""
+  );
+  const [vendor, setVendor] = useState(entry.vendor ?? "");
+  const [notes, setNotes] = useState(entry.notes ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (quantity === "" || Number(quantity) <= 0) {
+      setError("Quantity added must be greater than zero.");
+      return;
+    }
+    if (!restockDate) {
+      setError("Restock date is required.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const cents = parseEditCostDollars(costDollars);
+    const res = await updateRestock({
+      data: {
+        id: entry.id,
+        quantity: Number(quantity),
+        unit: entry.unit,
+        restock_date: restockDate,
+        total_cost_cents: cents,
+        vendor: vendor.trim() ? vendor.trim() : null,
+        notes: notes.trim() ? notes.trim() : null,
+      },
+    });
+    setSaving(false);
+    if (res.ok) {
+      onSaved(editRestockSavedMessage(entry.has_expense, cents));
+    } else {
+      setError(res.error);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Edit restock #${entry.id}`}
+      sub={`${entry.item_label} · ${fmtQty(entry.quantity, entry.unit)}${entry.total_cost_cents != null ? ` · ${fmtDollars(entry.total_cost_cents)}` : ""}`}
+      onClose={onClose}
+      footer={
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 sm:w-auto sm:px-5">
+            Cancel
+          </button>
+          <button type="submit" form="edit-restock-form" disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-green-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-900 disabled:opacity-60 sm:w-auto sm:px-5">
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      }
+    >
+      <form id="edit-restock-form" onSubmit={submit} className="space-y-4">
+        {error && <ErrorNote error={error} />}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label={`Quantity added (${entry.unit}) *`}>
+            <input
+              type="number" min={0} step={entry.unit === "tons" ? 0.1 : 1}
+              inputMode={entry.unit === "tons" ? "decimal" : "numeric"}
+              className={inputCls}
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value === "" ? "" : Number(e.target.value))}
+              required
+            />
+          </Field>
+          <Field label="Restock date *">
+            <input type="date" className={inputCls} value={restockDate} onChange={(e) => setRestockDate(e.target.value)} required />
+          </Field>
+          <CostPaidField
+            id="edit-restock-total-cost-paid"
+            value={costDollars}
+            onChange={setCostDollars}
+            help={RESTOCK_COST_EDIT_HELP}
+          />
+          <Field label="Vendor">
+            <input className={inputCls} value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="Mule Shoe Dairy…" />
+          </Field>
+        </div>
+        <Field label="Notes">
+          <textarea className={inputCls} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery, quality, stack location…" />
+        </Field>
+      </form>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Void restock — confirm first; the server reverses inventory, removes the
+// linked expense, and deletes the restock row. Blocked (with a plain message)
+// when stock already fed out would go below zero.
+// ---------------------------------------------------------------------------
+
+export function VoidRestockModal({
+  entry,
+  onClose,
+  onVoided,
+}: {
+  entry: RestockEntry;
+  onClose: () => void;
+  /** Called with the exact user-facing outcome message. */
+  onVoided: (message: string) => void;
+}) {
+  const [voiding, setVoiding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const confirm = async () => {
+    setVoiding(true);
+    setError(null);
+    const res = await deleteRestock({ data: entry.id });
+    setVoiding(false);
+    if (res.ok) {
+      onVoided(voidRestockMessage(res.linked_expense_removed));
+    } else {
+      setError(res.error);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Void restock #${entry.id}?`}
+      sub={`${entry.item_label} · ${fmtQty(entry.quantity, entry.unit)}${entry.total_cost_cents != null ? ` · ${fmtDollars(entry.total_cost_cents)}` : ""}`}
+      onClose={onClose}
+      footer={
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 sm:w-auto sm:px-5">
+            Keep restock
+          </button>
+          <button type="button" onClick={confirm} disabled={voiding} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-red-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-red-800 disabled:opacity-60 sm:w-auto sm:px-5">
+            {voiding ? "Voiding…" : "Void restock"}
+          </button>
+        </div>
+      }
+    >
+      <div className="space-y-3">
+        {error && <ErrorNote error={error} />}
+        <p className="text-sm text-stone-600">
+          This takes {fmtQty(entry.quantity, entry.unit)} back off the on-hand count
+          {entry.has_expense ? " and removes the linked expense" : ""}. This can&apos;t be undone — void only
+          a restock that was entered by mistake.
+        </p>
+      </div>
     </Modal>
   );
 }

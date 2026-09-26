@@ -15,6 +15,7 @@ import {
   type FeedData,
   type FeedItem,
   type HayItem,
+  type RestockEntry,
   type UsageEntry,
 } from "~/types/feed";
 
@@ -24,7 +25,7 @@ import {
 
 export const getFeedData = createServerFn().handler(async (): Promise<FeedData> => {
   if (!isDatabaseConfigured()) {
-    return { configured: false, hay: [], feed: [], groups: [], usage: [] };
+    return { configured: false, hay: [], feed: [], groups: [], usage: [], restocks: [] };
   }
   try {
     const auth = await requireAuth();
@@ -61,6 +62,29 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
         ORDER BY u.log_date DESC, u.id DESC
         LIMIT 120`,
     ]);
+    // Restock history is best-effort: databases that predate the restock_log
+    // table (0018) serve the rest of the module without it.
+    let restocks: RestockEntry[] = [];
+    try {
+      const rows = await db`
+        SELECT r.id, to_char(r.restock_date, 'YYYY-MM-DD') AS restock_date,
+               r.item_kind, r.hay_item_id, r.feed_item_id,
+               r.quantity::float8 AS quantity, r.unit,
+               r.total_cost_cents, r.vendor, r.notes,
+               COALESCE(h.feed_type || COALESCE(', ' || h.cutting || ' cutting', ''), f.name, r.item_kind) AS item_label,
+               EXISTS (SELECT 1 FROM expenses e
+                       WHERE e.source_type = 'restock' AND e.source_id = r.id
+                         AND e.operation_id = ${auth.operationId}) AS has_expense
+        FROM restock_log r
+        LEFT JOIN hay_inventory h ON h.id = r.hay_item_id
+        LEFT JOIN feed_inventory f ON f.id = r.feed_item_id
+        WHERE r.operation_id = ${auth.operationId}
+        ORDER BY r.restock_date DESC, r.id DESC
+        LIMIT 60`;
+      restocks = rows as unknown as RestockEntry[];
+    } catch {
+      restocks = [];
+    }
 
     return {
       configured: true,
@@ -68,6 +92,7 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
       feed: feedRows as unknown as FeedItem[],
       groups: groupRows as unknown as HerdGroupRef[],
       usage: usageRows as unknown as UsageEntry[],
+      restocks,
     };
   } catch (err) {
     return {
@@ -77,6 +102,7 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
       feed: [],
       groups: [],
       usage: [],
+      restocks: [],
     };
   }
 });
@@ -538,12 +564,45 @@ export function parseRestockEditInput(raw: unknown): RestockEditInput {
   };
 }
 
-/** Owner rule (PR #4 review): never silently clamp inventory to zero. When an
- *  edit or delete would push the on-hand count below zero, the whole correction
- *  is refused — some units have already been used, so the book value is right
- *  and the "correction" would be the error. */
-export const INVENTORY_BELOW_ZERO_ERROR =
-  "This correction would take the stock below zero — some units have already been used. Nothing was changed.";
+/** Owner rule (PR #4 review — preserved): never silently clamp inventory to
+ *  zero. When an edit or delete would push the on-hand count below zero, the
+ *  whole correction is refused — some units have already been used, so the book
+ *  value is right and the "correction" would be the error.
+ *
+ *  The message names the units actually in use (bales / tons / lbs …) and the
+ *  numbers behind the refusal, because "some units" left the operator guessing
+ *  which number was wrong. */
+export function inventoryBelowZeroMessage(unit: string, onHand: number, delta: number): string {
+  const u = (unit ?? "").trim() || "units";
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  /** "1 bale" / "4 bales" — the unit word the operator actually counts in. */
+  const withUnit = (n: number) => `${round2(n)} ${Math.abs(n) === 1 ? u.replace(/s$/, "") : u}`;
+  const wouldBe = round2(onHand + delta);
+  const used = round2(Math.abs(wouldBe));
+  const verb = used === 1 ? "has" : "have";
+  const onHandVerb = Math.abs(round2(onHand)) === 1 ? "is" : "are";
+  return `That would take this stack to ${withUnit(wouldBe)}. Only ${withUnit(onHand)} ${onHandVerb} on hand, and ${withUnit(
+    used
+  )} from this restock ${verb} already been used. Nothing was changed.`;
+}
+
+/** A refused correction is RECORDED, not just dropped: one structured line per
+ *  blocked edit/void so the attempt is auditable even though the app has no
+ *  inventory-adjustment table yet (see DESIGN NOTE in deleteRestockCore). This
+ *  never writes to the database and never changes the outcome — the block
+ *  itself stays a plain rollback. */
+export function recordBlockedInventoryAdjustment(info: {
+  action: "edit" | "void";
+  operationId: number;
+  restockId: number;
+  itemKind: "hay" | "feed";
+  unit: string;
+  onHand: number;
+  delta: number;
+}): void {
+  console.warn(`[inventory-adjustment-blocked] ${JSON.stringify(info)}`);
+}
+
 
 export const updateRestock = createServerFn({ method: "POST" })
   .validator(parseRestockEditInput)
@@ -593,7 +652,16 @@ export async function updateRestockCore(
       current = Number(inv.quantity);
     }
     if (current + delta < 0) {
-      return { ok: false, error: INVENTORY_BELOW_ZERO_ERROR };
+      recordBlockedInventoryAdjustment({
+        action: "edit",
+        operationId,
+        restockId: r.id,
+        itemKind: log.item_kind,
+        unit: log.unit,
+        onHand: current,
+        delta,
+      });
+      return { ok: false, error: inventoryBelowZeroMessage(log.unit, current, delta) };
     }
 
     await tx`
@@ -670,8 +738,8 @@ export async function deleteRestockCore(
   id: number
 ): Promise<{ ok: true; linked_expense_removed: boolean } | { ok: false; error: string }> {
   return await db.begin(async (tx) => {
-    const [log] = await tx<[{ item_kind: "hay" | "feed"; hay_item_id: number | null; feed_item_id: number | null; quantity: string }]>`
-      SELECT item_kind, hay_item_id, feed_item_id, quantity FROM restock_log
+    const [log] = await tx<[{ item_kind: "hay" | "feed"; hay_item_id: number | null; feed_item_id: number | null; quantity: string; unit: string }]>`
+      SELECT item_kind, hay_item_id, feed_item_id, quantity, unit FROM restock_log
       WHERE id=${id} AND operation_id=${operationId} FOR UPDATE`;
     if (!log) return { ok: false, error: "That restock no longer exists." };
     const itemId = log.item_kind === "hay" ? log.hay_item_id : log.feed_item_id;
@@ -704,7 +772,16 @@ export async function deleteRestockCore(
         // Owner rule: never silently clamp. Decide BEFORE any write, so a blocked
         // delete applies nothing — inventory, expense, and the log row all stay put.
         if (current - Number(log.quantity) < 0) {
-          return { ok: false, error: INVENTORY_BELOW_ZERO_ERROR };
+          recordBlockedInventoryAdjustment({
+            action: "void",
+            operationId,
+            restockId: id,
+            itemKind: log.item_kind,
+            unit: log.unit,
+            onHand: current,
+            delta: -Number(log.quantity),
+          });
+          return { ok: false, error: inventoryBelowZeroMessage(log.unit, current, -Number(log.quantity)) };
         }
         // Exact arithmetic, no clamp — the check above guarantees the new level stays >= 0.
         if (log.item_kind === "hay") {
