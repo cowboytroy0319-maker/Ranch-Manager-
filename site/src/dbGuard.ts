@@ -27,8 +27,10 @@
  *      `ranch_preview` / `*_preview`)                          → PRODUCTION_DB_IS_PREVIEW
  *
  * The preview deployment gets its three variables from the local gitignored
- * `.env.local`, loaded by `vite.config.ts` **only** on the dev/working-site
- * server (`command === "serve"`) — see docs/PREVIEW_ENVIRONMENT.md. The built
+ * `.preview-env`, loaded by `vite.config.ts` **only** on the dev/working-site
+ * server (`command === "serve"`) — see docs/PREVIEW_ENVIRONMENT.md. The file is
+ * deliberately NOT named `.env.local`, which Bun would auto-load into every
+ * `bun` process in this directory (including the published server). The built
  * live site never executes that path and stays on `DATABASE_URL`, byte for byte.
  *
  * Operator tooling (`db/migrate.ts`, `db/seed.ts`) additionally refuses a

@@ -315,7 +315,10 @@ describe("resolveDatabaseUrl — the runtime refusal path (process.env)", () => 
   test("preview with a missing URL resolves to undefined (fail closed, no fallback)", async () => {
     const { resolveDatabaseUrl } = await import("~/db");
     withEnv({ APP_ENV: "preview", PREVIEW_DATABASE_URL: undefined, DATABASE_URL: NEON }, () => {
-      expect(resolveDatabaseUrl()).toBeUndefined();
+      // Deliberately NOT `toBeUndefined()`: Bun's typings do not declare that
+      // matcher (tsc: TS2551), and the CI typecheck fails on any error that is
+      // not in site/tsc-baseline.txt. Comparing to `undefined` is equivalent.
+      expect(resolveDatabaseUrl() === undefined).toBe(true);
     });
   });
 
