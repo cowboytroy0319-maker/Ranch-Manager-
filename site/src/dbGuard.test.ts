@@ -102,20 +102,20 @@ describe("PREVIEW direction — APP_ENV=preview", () => {
     const g = evaluateDatabaseGuard(env({ APP_ENV: "preview", DATABASE_URL: NEON }));
     expect(g.refusal?.rule).toBe("PREVIEW_DATABASE_URL_MISSING");
     expect(g.ok).toBe(false);
-    expect(g.effectiveUrl).toBeUndefined();
+    expect(g.effectiveUrl === undefined).toBe(true);
     expect(g.effectiveUrl).not.toBe(NEON);
   });
 
   test("BLANK preview URL (spaces) → refused as missing", () => {
     const g = evaluateDatabaseGuard(env({ APP_ENV: "preview", PREVIEW_DATABASE_URL: "   ", DATABASE_URL: NEON }));
     expect(g.refusal?.rule).toBe("PREVIEW_DATABASE_URL_MISSING");
-    expect(g.effectiveUrl).toBeUndefined();
+    expect(g.effectiveUrl === undefined).toBe(true);
   });
 
   test("unparseable preview URL → refused (no guessing at a target)", () => {
     const g = evaluateDatabaseGuard(env({ APP_ENV: "preview", PREVIEW_DATABASE_URL: "preview-db", DATABASE_URL: NEON }));
     expect(g.refusal?.rule).toBe("PREVIEW_DATABASE_URL_UNPARSEABLE");
-    expect(g.effectiveUrl).toBeUndefined();
+    expect(g.effectiveUrl === undefined).toBe(true);
   });
 
   test("preview target IDENTICAL to the production target → refused", () => {
@@ -124,7 +124,7 @@ describe("PREVIEW direction — APP_ENV=preview", () => {
     );
     expect(g.refusal?.rule).toBe("PREVIEW_TARGET_EQUALS_PRODUCTION");
     expect(g.ok).toBe(false);
-    expect(g.effectiveUrl).toBeUndefined(); // ← the query can never run
+    expect(g.effectiveUrl === undefined).toBe(true); // ← the query can never run
   });
 
   test("preview target equal to production under a DIFFERENT user is still refused", () => {
@@ -147,7 +147,7 @@ describe("PREVIEW direction — APP_ENV=preview", () => {
       })
     );
     expect(g.refusal?.rule).toBe("PREVIEW_TARGET_EQUALS_PRODUCTION");
-    expect(g.effectiveUrl).toBeUndefined();
+    expect(g.effectiveUrl === undefined).toBe(true);
   });
 });
 
@@ -173,7 +173,7 @@ describe("PRODUCTION direction — APP_ENV absent or anything but preview", () =
     const g = evaluateDatabaseGuard(env({ PREVIEW_ENV_EXPECTED: "1", DATABASE_URL: NEON }));
     expect(g.refusal?.rule).toBe("PREVIEW_ENV_EXPECTED_BUT_NOT_PREVIEW");
     expect(g.ok).toBe(false);
-    expect(g.effectiveUrl).toBeUndefined();
+    expect(g.effectiveUrl === undefined).toBe(true);
     expect(g.previewEnvExpected).toBe(true);
   });
 
@@ -192,7 +192,7 @@ describe("PRODUCTION direction — APP_ENV absent or anything but preview", () =
   test("DATABASE_URL on a preview-marked db name → refused (never serve scratch data as production)", () => {
     const g = evaluateDatabaseGuard(env({ DATABASE_URL: LOCAL_PREVIEW }));
     expect(g.refusal?.rule).toBe("PRODUCTION_DB_IS_PREVIEW");
-    expect(g.effectiveUrl).toBeUndefined();
+    expect(g.effectiveUrl === undefined).toBe(true);
   });
 
   test("DATABASE_URL == PREVIEW_DATABASE_URL target (even without a 'preview' name) → refused", () => {
@@ -210,7 +210,7 @@ describe("PRODUCTION direction — APP_ENV absent or anything but preview", () =
     const g = evaluateDatabaseGuard(env({}));
     expect(g.refusal).toBeNull();
     expect(g.ok).toBe(true);
-    expect(g.effectiveUrl).toBeUndefined();
+    expect(g.effectiveUrl === undefined).toBe(true);
     expect(g.urlSource).toBe("none");
   });
 });
