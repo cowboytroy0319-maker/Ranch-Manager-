@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# ============================================================================
+# sync-shared-site.sh — publish THIS branch into the platform's WORKING
+# (preview) tree, as a FULL-TREE sync.
+#
+#   bash scripts/sync-shared-site.sh            # from a git clone of the repo
+#   SYNC_DEST=/somewhere bash scripts/sync-shared-site.sh
+#
+# Why a full tree: the working tree is not a git checkout — it is a plain copy
+# of the repo's `site/` directory that the managed `vite dev` server serves
+# live. Copying individual files into it leaves dangling imports and every
+# route 500s ("Cannot find module …", "rootRouteNode must not be undefined"), so
+# this script always rsyncs the WHOLE tree with `--delete`.
+#
+# What it must NEVER delete (all excluded below):
+#   node_modules/            installed dependencies (rsync would replace them)
+#   .run/  dist/  .vite/  .tanstack/   runtime state, build output, caches
+#   .preview-env             LOCAL preview credentials (chmod 600, gitignored)
+#   .preview-deployment.json  this script rewrites it at the end
+#
+# It then rewrites `.preview-deployment.json` from the clone's git metadata,
+# because there is no git in the destination — /preview-status reads branch,
+# commit and sync time from that file.
+# ============================================================================
+set -euo pipefail
+
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # this site/ tree
+DEST="${SYNC_DEST:-/home/team/shared/site}"
+REPO_ROOT="$(cd "$SRC/.." && pwd)"                        # the git clone (if any)
+
+[ -d "$DEST" ] || { echo "sync-shared-site: destination not found: $DEST" >&2; exit 1; }
+[ "$SRC" != "$DEST" ] || { echo "sync-shared-site: source and destination are the same" >&2; exit 1; }
+command -v rsync >/dev/null 2>&1 || { echo "sync-shared-site: rsync not installed" >&2; exit 1; }
+
+# A node_modules SYMLINK in the source would replace the destination's real
+# directory (rsync cannot make way for it) and take the preview offline. Drop it
+# and let the exclude below cover the real directory.
+if [ -L "$SRC/node_modules" ]; then
+  rm -f "$SRC/node_modules"
+  echo "sync-shared-site: removed the node_modules symlink from the source"
+fi
+
+echo "sync-shared-site: $SRC → $DEST (full tree, --delete, preview env preserved)"
+rsync -a --delete \
+  --exclude 'node_modules' \
+  --exclude '.run/' \
+  --exclude 'dist/' \
+  --exclude '.vite/' \
+  --exclude '.tanstack/' \
+  --exclude '.env.local' \
+  --exclude '.preview-env' \
+  --exclude '.preview-deployment.json' \
+  "$SRC"/ "$DEST"/
+
+branch="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+commit="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$commit" = "unknown" ]; then
+  echo "sync-shared-site: no git metadata at $REPO_ROOT — leaving .preview-deployment.json alone"
+  exit 0
+fi
+short="${commit:0:7}"
+synced_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+marker="preview-${short}-$(date -u +%Y%m%dT%H%M%SZ)"
+
+umask 022
+cat > "$DEST/.preview-deployment.json" <<EOF
+{
+  "branch": "$branch",
+  "commit": "$commit",
+  "shortCommit": "$short",
+  "syncedAt": "$synced_at",
+  "marker": "$marker",
+  "syncedFrom": "$SRC",
+  "syncedTo": "$DEST"
+}
+EOF
+chmod 644 "$DEST/.preview-deployment.json"
+
+if [ -f "$DEST/.env.local" ]; then
+  echo "sync-shared-site: .env.local present (preview credentials preserved)"
+else
+  echo "sync-shared-site: WARNING: $DEST/.env.local is missing — run scripts/preview-env.sh up"
+fi
+echo "sync-shared-site: done — $branch @ $short ($marker)"

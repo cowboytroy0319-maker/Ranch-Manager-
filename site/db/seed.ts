@@ -15,6 +15,7 @@
  * you seed.
  */
 import { closeDb, rawSql, sql } from "../src/db";
+import { assertOperatorTargetSafe } from "../src/dbGuard";
 import { runMigrations } from "./migrate";
 
 const day = 24 * 60 * 60 * 1000;
@@ -843,8 +844,12 @@ async function seed(): Promise<void> {
   );
 }
 
-// Run directly: `bun db/seed.ts`
+// Run directly: `bun db/seed.ts` (guarded — same rules as db/migrate.ts, because
+// seeding the wrong database is just as destructive as migrating it).
 if (import.meta.main) {
+  if (!assertOperatorTargetSafe(process.env, process.argv, "db:seed")) {
+    process.exit(2);
+  }
   runMigrations()
     .then(seed)
     .then(() => console.log("done"))

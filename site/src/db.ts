@@ -5,8 +5,24 @@ import {
   isPreviewEnvironment,
   sanitizeDbError,
 } from "./dbErrors";
+import {
+  APP_ENV_VAR,
+  DATABASE_URL_VAR,
+  PREVIEW_ENV_EXPECTED_VAR,
+  PREVIEW_ENV_VAR,
+  evaluateDatabaseGuard,
+  logGuardRefusal,
+  refusalMessage,
+  type DbGuardResult,
+} from "./dbGuard";
 
 export { isPreviewEnvironment };
+export { APP_ENV_VAR, DATABASE_URL_VAR, PREVIEW_ENV_EXPECTED_VAR, PREVIEW_ENV_VAR };
+
+/** The full two-direction guard verdict for this process (see src/dbGuard.ts).
+ * Exported so the /preview-status page (and tests) can report exactly which rule
+ * refused, without ever reading a password. */
+export const databaseGuard = (): DbGuardResult => evaluateDatabaseGuard();
 
 /**
  * Server-only handle to the team's Postgres database, over the standard wire
@@ -53,6 +69,13 @@ export { isPreviewEnvironment };
  * each deployment (see docs/PREVIEW_ENVIRONMENT.md). There is no hostname
  * detection anywhere.
  *
+ * On top of that selection, src/dbGuard.ts evaluates BOTH directions of refusal
+ * every time a connection is resolved (preview must never reach the production
+ * target/host; production must never point at preview-marked data; a preview
+ * deployment that lost its APP_ENV must refuse rather than fall through). A
+ * refusal means no query runs and no fallback happens — see src/dbGuard.ts and
+ * the /preview-status page, which reports the verdict verbatim.
+ *
  * The client returned by sql() is GUARDED: any database-originated failure is
  * rewritten by src/dbErrors.ts to a customer-safe message before a handler
  * ever sees it (preview → "This preview is being prepared. Please try again
@@ -61,27 +84,30 @@ export { isPreviewEnvironment };
  * (migrations/seeding) where technical error text is the point.
  */
 
-/** Env var that names the deployment mode: "production" | "preview". It is the
- * ONLY switch for which database to use — never presence of PREVIEW_DATABASE_URL. */
-export const APP_ENV_VAR = "APP_ENV";
-
-/** Env var the owner sets on the PREVIEW deployment (alongside APP_ENV=preview)
- * to point it at a disposable database. Never set it on the live deployment. */
-export const PREVIEW_ENV_VAR = "PREVIEW_DATABASE_URL";
-
 /**
  * Resolve which Postgres connection string to use, keyed off APP_ENV (explicit
- * deployment mode). Exported so the four selection cases can be tested directly.
+ * deployment mode) AND the two-direction guard in src/dbGuard.ts. Exported so
+ * the selection cases can be tested directly.
  *
  *   • APP_ENV === "preview"  → PREVIEW_DATABASE_URL ONLY; missing/blank → undefined (fail closed).
  *   • anything else          → DATABASE_URL ONLY (PREVIEW_DATABASE_URL ignored even if present).
+ *
+ * Before either is used, `evaluateDatabaseGuard()` checks both guard directions.
+ * On a refusal NOTHING is returned to the caller: the refusal is logged loudly
+ * server-side and `GENERIC_DB_ERROR_MESSAGE`/the preview wording is thrown, so
+ * **no query is executed and there is never a silent fallback** to the other
+ * database. The one exception is the missing-preview-URL case, which keeps its
+ * original fail-closed contract of returning `undefined` (rawSql then refuses
+ * with the same loud log + customer-safe error it always has).
  */
 export const resolveDatabaseUrl = (): string | undefined => {
-  const appEnv = process.env.APP_ENV?.trim();
-  if (appEnv === "preview") {
-    return process.env.PREVIEW_DATABASE_URL?.trim() || undefined;
+  const guard = databaseGuard();
+  if (guard.refusal) {
+    logGuardRefusal(guard, "db");
+    if (guard.refusal.rule === "PREVIEW_DATABASE_URL_MISSING") return undefined;
+    throw new Error(refusalMessage(guard.mode === "preview"));
   }
-  return process.env.DATABASE_URL?.trim() || undefined;
+  return guard.effectiveUrl;
 };
 
 /** The raw (unguarded) pooled client. Operator tooling only. */
@@ -183,9 +209,13 @@ export const sql = (): postgres.Sql => {
   return guardedClient;
 };
 
-/** True when a connection string is present (lets the UI render a clear
- * "database not configured" state instead of surfacing a raw error). */
-export const isDatabaseConfigured = (): boolean => Boolean(resolveDatabaseUrl());
+/** True when a usable connection string is present AND no guard rule refuses it
+ * (lets the UI render a clear "database not configured" state instead of hitting
+ * the DB — or surfacing a raw error — when the deployment is misconfigured). */
+export const isDatabaseConfigured = (): boolean => {
+  const guard = databaseGuard();
+  return guard.ok && Boolean(guard.effectiveUrl);
+};
 
 /** Close the pooled connection (used by the db scripts; server code never ends it). */
 export const closeDb = async (): Promise<void> => {
