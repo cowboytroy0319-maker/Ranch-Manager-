@@ -6,6 +6,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
+import { loadExpenseLinkColumns } from "~/expenseSchema";
 import type { HerdGroupRef } from "~/types/feed";
 import {
   FEED_CATEGORIES,
@@ -15,6 +16,7 @@ import {
   type FeedData,
   type FeedItem,
   type HayItem,
+  type RestockEntry,
   type UsageEntry,
 } from "~/types/feed";
 
@@ -24,12 +26,12 @@ import {
 
 export const getFeedData = createServerFn().handler(async (): Promise<FeedData> => {
   if (!isDatabaseConfigured()) {
-    return { configured: false, hay: [], feed: [], groups: [], usage: [] };
+    return { configured: false, hay: [], feed: [], groups: [], usage: [], restocks: [] };
   }
   try {
     const auth = await requireAuth();
     const db = sql();
-    const [hayRows, feedRows, groupRows, usageRows] = await Promise.all([
+    const [hayRows, feedRows, groupRows, usageRows, restockRows] = await Promise.all([
       db`
         SELECT id, feed_type, cutting, field_or_source, storage_location,
                quantity::float8 AS quantity, unit, bale_weight_lbs::float8 AS bale_weight_lbs,
@@ -60,6 +62,27 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
         WHERE u.operation_id = ${auth.operationId}
         ORDER BY u.log_date DESC, u.id DESC
         LIMIT 120`,
+      // Restock history — every restock this operation entered, most recent
+      // first, with the ledger row it owns (if any). Without this list a
+      // restock was write-only: nothing in the UI could show, edit or void it.
+      // (restock_log + the expense link columns arrive together with migration
+      // 0018_product_blocker.sql, so this read is 0018-dependent like the rest
+      // of the restock feature — the caller's catch keeps the message safe.)
+      db<RestockEntry[]>`
+        SELECT r.id, r.item_kind, r.hay_item_id, r.feed_item_id,
+               COALESCE(h.field_or_source, f.name, r.item_kind) AS item_label,
+               r.quantity::float8 AS quantity, r.unit,
+               to_char(r.restock_date, 'YYYY-MM-DD') AS restock_date,
+               r.total_cost_cents, r.vendor, r.notes, r.created_at::text AS created_at,
+               e.id AS expense_id
+        FROM restock_log r
+        LEFT JOIN hay_inventory h ON h.id = r.hay_item_id
+        LEFT JOIN feed_inventory f ON f.id = r.feed_item_id
+        LEFT JOIN expenses e
+          ON e.source_type = 'restock' AND e.source_id = r.id AND e.operation_id = r.operation_id
+        WHERE r.operation_id = ${auth.operationId}
+        ORDER BY r.restock_date DESC, r.id DESC
+        LIMIT 60`,
     ]);
 
     return {
@@ -68,6 +91,7 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
       feed: feedRows as unknown as FeedItem[],
       groups: groupRows as unknown as HerdGroupRef[],
       usage: usageRows as unknown as UsageEntry[],
+      restocks: restockRows,
     };
   } catch (err) {
     return {
@@ -77,6 +101,7 @@ export const getFeedData = createServerFn().handler(async (): Promise<FeedData> 
       feed: [],
       groups: [],
       usage: [],
+      restocks: [],
     };
   }
 });
@@ -452,6 +477,8 @@ export async function restockItemCore(
       const [item] = await tx<[{ unit: string }]>`
         SELECT unit FROM hay_inventory WHERE id=${r.item_id} AND operation_id=${operationId} FOR UPDATE`;
       if (!item) return { ok: false, error: "That hay stack no longer exists." };
+      const unitError = restockUnitError(r.unit, item.unit);
+      if (unitError) return { ok: false, error: unitError };
       const [log] = await tx<[{ id: number }]>`
         INSERT INTO restock_log (operation_id, item_kind, hay_item_id, quantity, unit,
                                  restock_date, total_cost_cents, vendor, notes, client_request_id)
@@ -476,6 +503,8 @@ export async function restockItemCore(
     const [item] = await tx<[{ unit: string }]>`
       SELECT unit FROM feed_inventory WHERE id=${r.item_id} AND operation_id=${operationId} FOR UPDATE`;
     if (!item) return { ok: false, error: "That feed item no longer exists." };
+    const unitError = restockUnitError(r.unit, item.unit);
+    if (unitError) return { ok: false, error: unitError };
     const [log] = await tx<[{ id: number }]>`
       INSERT INTO restock_log (operation_id, item_kind, feed_item_id, quantity, unit,
                                restock_date, total_cost_cents, vendor, notes, client_request_id)
@@ -545,6 +574,18 @@ export function parseRestockEditInput(raw: unknown): RestockEditInput {
 export const INVENTORY_BELOW_ZERO_ERROR =
   "This correction would take the stock below zero — some units have already been used. Nothing was changed.";
 
+/** Owner contract (stage 2 — "unit must be a real control, not an implicit
+ *  pin"): the unit is a real form control, and the server REFUSES a unit that
+ *  does not match the item's own unit instead of silently ignoring it.
+ *  Restocking a bale-counted stack in "tons" would quietly corrupt the on-hand
+ *  figure, so the correction is refused with a message naming both units.
+ *  A blank unit keeps the historical behaviour: use the item's own unit. */
+export function restockUnitError(unit: string | null, itemUnit: string): string | null {
+  const requested = (unit ?? "").trim();
+  if (!requested || requested === itemUnit) return null;
+  return `That item is counted in ${itemUnit}. Restock it in ${itemUnit} — "${requested}" would not add up. Nothing was changed.`;
+}
+
 export const updateRestock = createServerFn({ method: "POST" })
   .validator(parseRestockEditInput)
   .handler(async ({ data: r }): Promise<{ ok: true; id: number } | { ok: false; error: string }> => {
@@ -567,6 +608,11 @@ export async function updateRestockCore(
   operationId: number,
   r: RestockEditInput
 ): Promise<{ ok: true; id: number } | { ok: false; error: string }> {
+  // Link-column discovery happens ONCE per process, outside the transaction:
+  // on a database missing the 0018 link columns an edit must not fail on a
+  // SELECT of a column that isn't there (audit defect D2). No row can be
+  // linked in that schema, so the linked branch is skipped.
+  const linkCols = await loadExpenseLinkColumns(db);
   return await db.begin(async (tx) => {
     const [log] = await tx<[{ item_kind: "hay" | "feed"; hay_item_id: number | null; feed_item_id: number | null; quantity: string; unit: string }]>`
       SELECT item_kind, hay_item_id, feed_item_id, quantity, unit FROM restock_log
@@ -581,23 +627,30 @@ export async function updateRestockCore(
     // decide BEFORE any write, so a blocked edit applies nothing at all — no
     // partial inventory, restock_log, or expense changes.
     let current: number;
+    let itemUnit: string;
     if (log.item_kind === "hay") {
-      const [inv] = await tx<[{ quantity: string }]>`SELECT quantity FROM hay_inventory
+      const [inv] = await tx<[{ quantity: string; unit: string }]>`SELECT quantity, unit FROM hay_inventory
         WHERE id=${itemId} AND operation_id=${operationId} FOR UPDATE`;
       if (!inv) return { ok: false, error: "That restock's inventory item was deleted, so it can't be edited." };
       current = Number(inv.quantity);
+      itemUnit = inv.unit;
     } else {
-      const [inv] = await tx<[{ quantity: string }]>`SELECT quantity FROM feed_inventory
+      const [inv] = await tx<[{ quantity: string; unit: string }]>`SELECT quantity, unit FROM feed_inventory
         WHERE id=${itemId} AND operation_id=${operationId} FOR UPDATE`;
       if (!inv) return { ok: false, error: "That restock's inventory item was deleted, so it can't be edited." };
       current = Number(inv.quantity);
+      itemUnit = inv.unit;
     }
+    // Unit is a real control — an edit that names a different unit is refused
+    // (never silently ignored), a blank one means "the item's own unit".
+    const unitError = restockUnitError(r.unit, itemUnit);
+    if (unitError) return { ok: false, error: unitError };
     if (current + delta < 0) {
       return { ok: false, error: INVENTORY_BELOW_ZERO_ERROR };
     }
 
     await tx`
-      UPDATE restock_log SET quantity=${r.quantity}, unit=${r.unit}, restock_date=${r.restock_date},
+      UPDATE restock_log SET quantity=${r.quantity}, unit=${itemUnit}, restock_date=${r.restock_date},
         total_cost_cents=${r.total_cost_cents}, vendor=${r.vendor}, notes=${r.notes}
       WHERE id=${r.id} AND operation_id=${operationId}`;
 
@@ -612,10 +665,21 @@ export async function updateRestockCore(
 
     // Upsert the linked expense: cost now > 0 → INSERT or UPDATE the existing
     // linked row (the unique index keeps exactly one); cost blank/0 → DELETE.
-    const linked = await tx<[{ id: number; amount_cents: number }]>`
-      SELECT id, amount_cents FROM expenses
-      WHERE source_type='restock' AND source_id=${r.id} AND operation_id=${operationId}`;
+    const linked = linkCols.sourceType && linkCols.sourceId
+      ? await tx<[{ id: number; amount_cents: number }]>`
+          SELECT id, amount_cents FROM expenses
+          WHERE source_type='restock' AND source_id=${r.id} AND operation_id=${operationId}`
+      : [];
     if (r.total_cost_cents !== null && r.total_cost_cents > 0) {
+      if (!linkCols.sourceType || !linkCols.sourceId) {
+        // Unreachable through the migrations (0018 adds restock_log AND the
+        // link columns together), but if it ever happens the edit is refused
+        // rather than silently dropping the operator's expense.
+        console.error(
+          "[feed] updateRestock: expenses.source_type/source_id are missing (migration 0018_product_blocker.sql not applied) — refusing the edit so a cost is never silently dropped. The transaction was rolled back."
+        );
+        throw new Error("We couldn't update that restock right now. Please try again.");
+      }
       if (linked.length > 0) {
         await tx`
           UPDATE expenses SET expense_date=${r.restock_date}, amount_cents=${r.total_cost_cents},
@@ -669,14 +733,20 @@ export async function deleteRestockCore(
   operationId: number,
   id: number
 ): Promise<{ ok: true; linked_expense_removed: boolean } | { ok: false; error: string }> {
+  // Link-column discovery OUTSIDE the transaction (audit defect D2): on a
+  // database missing the link columns there is no linked row to find, and the
+  // void must still reverse inventory instead of dying on a missing column.
+  const linkCols = await loadExpenseLinkColumns(db);
   return await db.begin(async (tx) => {
     const [log] = await tx<[{ item_kind: "hay" | "feed"; hay_item_id: number | null; feed_item_id: number | null; quantity: string }]>`
       SELECT item_kind, hay_item_id, feed_item_id, quantity FROM restock_log
       WHERE id=${id} AND operation_id=${operationId} FOR UPDATE`;
     if (!log) return { ok: false, error: "That restock no longer exists." };
     const itemId = log.item_kind === "hay" ? log.hay_item_id : log.feed_item_id;
-    const linked = await tx<[{ id: number }]>`
-      SELECT id FROM expenses WHERE source_type='restock' AND source_id=${id} AND operation_id=${operationId}`;
+    const linked = linkCols.sourceType && linkCols.sourceId
+      ? await tx<[{ id: number }]>`
+          SELECT id FROM expenses WHERE source_type='restock' AND source_id=${id} AND operation_id=${operationId}`
+      : [];
     // DESIGN NOTE — audited inventory adjustments (owner-requested, NOT built
     // here): blocking a reversal below zero means stock that was already fed out
     // can't be un-recorded by deleting a restock. A future inventory-adjustment
@@ -748,9 +818,29 @@ export async function insertLinkedExpense(
     pasture_id?: number | null;
   }
 ): Promise<void> {
-  await tx`
-    INSERT INTO expenses (operation_id, expense_date, category, amount_cents, vendor, notes,
-                          pasture_id, source_type, source_id)
-    VALUES (${operationId}, ${e.expense_date}, ${e.category}, ${e.amount_cents}, ${e.vendor}, ${e.notes},
-            ${e.pasture_id ?? null}, ${e.source_type}, ${e.source_id})`;
+  try {
+    await tx`
+      INSERT INTO expenses (operation_id, expense_date, category, amount_cents, vendor, notes,
+                            pasture_id, source_type, source_id)
+      VALUES (${operationId}, ${e.expense_date}, ${e.category}, ${e.amount_cents}, ${e.vendor}, ${e.notes},
+              ${e.pasture_id ?? null}, ${e.source_type}, ${e.source_id})`;
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    const raw = (err as { message?: string }).message ?? "";
+    if (code === "42703" && /source_type|source_id|paid_by/.test(raw)) {
+      // The linked-expense columns are missing: this build is running against a
+      // database that has not had migration 0018_product_blocker.sql applied.
+      // The throw aborts the CALLER's transaction, so inventory is not touched
+      // either — "a failed expense never leaves a partial inventory update".
+      console.error(
+        `[feed] linked expense refused: expenses.${/source_type/.test(raw) ? "source_type" : "source_id"} does not exist on the target database — ` +
+          `migration 0018_product_blocker.sql is unapplied. The whole transaction was rolled back; inventory was NOT changed. ` +
+          `Check the deployment with \`bun run db:check-schema\`.`
+      );
+      throw new Error(
+        "We couldn't record the expense for this restock, so nothing was changed. Please try again."
+      );
+    }
+    throw err;
+  }
 }

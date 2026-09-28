@@ -223,15 +223,17 @@ function ExpensesPage() {
               {data.rows.map((r) => {
                 const indicator = expenseSourceIndicator(r);
                 return (
-                  <li key={r.id} className="py-3">
+                  <li key={r.id} data-testid={`expense-row-${r.id}`} data-linked={r.linked ? "true" : "false"} className="py-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-xs font-semibold text-stone-500">{r.expense_date}</span>
                           <Badge tone={catTone(r.category)}>{CATEGORY_LABEL[r.category]}</Badge>
-                          <span className="text-lg font-bold text-stone-900">{fmt(r.amount_cents)}</span>
+                          <span className="text-lg font-bold text-stone-900" data-testid="expense-amount" data-amount-cents={r.amount_cents}>
+                            {fmt(r.amount_cents)}
+                          </span>
                         </div>
-                        <p className="mt-0.5 truncate text-sm font-medium text-stone-800">{r.vendor ?? "—"}</p>
+                        <p className="mt-0.5 truncate text-sm font-medium text-stone-800" data-testid="expense-vendor">{r.vendor ?? "—"}</p>
                         <p className="truncate text-xs text-stone-500">
                           {[r.herd_group_name, r.pasture_name, r.equipment_name, r.job].filter(Boolean).join(" · ") || "Unallocated"}
                           {r.paid_by ? ` · paid by ${r.paid_by}` : ""}

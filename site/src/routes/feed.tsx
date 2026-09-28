@@ -3,7 +3,7 @@ import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
 import { useMemo, useState, useEffect } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
-import { FeedFormModal, HayFormModal, LogUsageModal, RestockModal, hayLabel } from "~/components/feed/FeedModals";
+import { FeedFormModal, HayFormModal, LogUsageModal, RestockEditModal, RestockModal, VoidRestockModal, hayLabel } from "~/components/feed/FeedModals";
 import { getFeedData } from "~/server/feed";
 import { useAddIntent } from "~/components/useAddIntent";
 import { TemplatesLink } from "~/components/TemplatesLink";
@@ -17,6 +17,7 @@ import {
   lowStockItems,
   type FeedItem,
   type HayItem,
+  type RestockEntry,
 } from "~/types/feed";
 
 export const Route = createFileRoute("/feed")({
@@ -51,6 +52,9 @@ function FeedPage() {
   const [restockOpen, setRestockOpen] = useState(false);
   const [restockSel, setRestockSel] = useState<{ kind: "hay" | "feed"; id: number } | null>(null);
   const [restockMessage, setRestockMessage] = useState<string | null>(null);
+  // History actions — a restock is editable and voidable, not write-only.
+  const [editingRestock, setEditingRestock] = useState<RestockEntry | null>(null);
+  const [voidingRestock, setVoidingRestock] = useState<RestockEntry | null>(null);
 
   const openUsage = (sel: { kind: "hay" | "feed"; id: number } | null) => {
     setUsageSel(sel);
@@ -266,7 +270,7 @@ function FeedPage() {
                 const isLow = h.quantity <= h.low_stock_threshold;
                 const days = hayDaysLeftForItem(h, data.usage);
                 return (
-                  <tr key={h.id} className="transition hover:bg-green-50/50">
+                  <tr key={h.id} data-testid={`hay-row-${h.id}`} className="transition hover:bg-green-50/50">
                     <td className="py-2.5 pr-3">
                       <span className="font-semibold text-stone-900">
                         {hayTypeEmoji[h.feed_type]} {h.feed_type[0].toUpperCase() + h.feed_type.slice(1)}
@@ -276,7 +280,11 @@ function FeedPage() {
                     <td className="py-2.5 pr-3 text-stone-700">{h.field_or_source ?? "—"}</td>
                     <td className="py-2.5 pr-3 text-stone-600">{h.storage_location ?? "—"}</td>
                     <td className="whitespace-nowrap py-2.5 pr-3">
-                      <span className={`font-semibold ${isLow ? "text-red-700" : "text-stone-900"}`}>
+                      <span
+                        data-testid={`hay-qty-${h.id}`}
+                        data-quantity={h.quantity}
+                        className={`font-semibold ${isLow ? "text-red-700" : "text-stone-900"}`}
+                      >
                         {fmtQty(h.quantity, h.unit)}
                       </span>
                       {h.unit === "bales" && h.bale_weight_lbs && (
@@ -333,6 +341,70 @@ function FeedPage() {
         </div>
       </Card>
 
+      {/* Restock history — every restock is visible, editable and voidable.
+          A restock owns its linked expense: editing updates THAT row, voiding
+          reverses the stock and removes it. */}
+      <Card>
+        <CardTitle
+          title="Restock history"
+          sub="Stock added, its cost, and the linked expense — correct or void any entry"
+          right={<Badge tone="green">{data.restocks.length} {data.restocks.length === 1 ? "restock" : "restocks"}</Badge>}
+        />
+        {data.restocks.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-stone-300 p-4 text-center text-sm text-stone-500">
+            No restocks yet. Use <span className="font-semibold">Restock</span> on a hay stack or feed item above — with a cost,
+            it records the linked expense in one step.
+          </p>
+        ) : (
+          <ul className="mt-2 divide-y divide-stone-100" data-testid="restock-history">
+            {data.restocks.map((r) => (
+              <li key={r.id} data-testid={`restock-row-${r.id}`} className="flex flex-wrap items-center gap-3 py-3">
+                <Badge tone={r.item_kind === "hay" ? "amber" : "blue"}>{r.item_kind === "hay" ? "Hay" : "Feed"}</Badge>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-stone-800" data-testid="restock-item">
+                    {r.item_label}
+                  </p>
+                  <p className="text-xs text-stone-500">
+                    <span data-testid="restock-date">{r.restock_date}</span>
+                    {" · "}
+                    <span data-testid="restock-qty">{fmtQty(r.quantity, r.unit)}</span>
+                    {r.vendor ? <> {" · "} <span data-testid="restock-vendor">{r.vendor}</span></> : null}
+                    {r.notes ? <> {" · "} {r.notes}</> : null}
+                  </p>
+                </div>
+                <span
+                  className="text-sm font-bold text-stone-900"
+                  data-testid="restock-cost"
+                  data-cost-cents={r.total_cost_cents ?? ""}
+                >
+                  {fmtDollars(r.total_cost_cents)}
+                </span>
+                <span
+                  className="text-xs text-stone-500"
+                  data-testid="restock-linked"
+                  data-expense-id={r.expense_id ?? ""}
+                >
+                  {r.expense_id != null ? "↳ in Expenses" : "inventory only"}
+                </span>
+                <div className="flex shrink-0 gap-1.5">
+                  <button
+                    onClick={() => setEditingRestock(r)}
+                    className="min-h-11 rounded-lg border border-stone-200 px-3 py-2 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => setVoidingRestock(r)}
+                    className="min-h-11 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50"
+                  >
+                    Void
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
       {/* Feed inventory */}
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -479,6 +551,30 @@ function FeedPage() {
           onClose={() => setRestockOpen(false)}
           onSaved={(message) => {
             setRestockOpen(false);
+            setRestockMessage(message);
+            refresh();
+          }}
+        />
+      )}
+      {editingRestock && (
+        <RestockEditModal
+          key={`restock-edit-${editingRestock.id}`}
+          restock={editingRestock}
+          onClose={() => setEditingRestock(null)}
+          onSaved={(message) => {
+            setEditingRestock(null);
+            setRestockMessage(message);
+            refresh();
+          }}
+        />
+      )}
+      {voidingRestock && (
+        <VoidRestockModal
+          key={`restock-void-${voidingRestock.id}`}
+          restock={voidingRestock}
+          onClose={() => setVoidingRestock(null)}
+          onVoided={(message) => {
+            setVoidingRestock(null);
             setRestockMessage(message);
             refresh();
           }}

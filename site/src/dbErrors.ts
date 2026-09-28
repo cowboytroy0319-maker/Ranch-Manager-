@@ -54,6 +54,37 @@ export const isPreviewEnvironment = (): boolean =>
  * SQL error and is left alone. */
 const SQLSTATE_RE = /^[0-9][0-9][A-Z0-9]{3}$/;
 
+/** ============================================================================
+ * PERMANENT SCHEMA FAULTS (audit defect D3).
+ *
+ * The customer-facing wording stays EXACTLY what it was — an operator gets the
+ * same safe sentence whether the fault is transient or permanent. What changes
+ * is the SERVER LOG: a permanent fault (a missing table/column/function, i.e.
+ * this build is running against a database that has not had its migrations
+ * applied) is now distinguishable from a transient one (a dropped connection,
+ * a lock timeout), because only one of them can be fixed by retrying and only
+ * one of them is a DEPLOYMENT fault.
+ *
+ * 42P01 undefined_table · 42703 undefined_column · 42883 undefined_function ·
+ * 42P07 duplicate_table · 3F000 invalid_schema_name · 42704 undefined_object
+ * 42804 datatype_mismatch · 42P10 invalid_column_reference (as used by an index)
+ * ============================================================================ */
+export const PERMANENT_SCHEMA_SQLSTATES = new Set([
+  "42P01",
+  "42703",
+  "42883",
+  "42P07",
+  "42704",
+  "42804",
+  "42P10",
+  "3F000",
+]);
+
+/** True when this SQLSTATE means "the schema this build needs is not there".
+ *  Retrying cannot help; the deployment has to be migrated. */
+export const isPermanentSchemaFault = (code: unknown): boolean =>
+  typeof code === "string" && PERMANENT_SCHEMA_SQLSTATES.has(code);
+
 /** postgres.js driver-level failure codes (connection refused/closed, socket,
  * auth, unsupported message) — see node_modules/postgres/src/errors.js. */
 const DRIVER_CODE_RE =
@@ -93,6 +124,20 @@ export const sanitizeDbError = (err: unknown): Error => {
       original ? `${original.name}: ${original.message}` : String(err)
     }`
   );
+  // Server-side only (D3): make the PERMANENT path unmistakable. The user-facing
+  // wording is deliberately unchanged; this line is what tells whoever reads the
+  // logs that a retry cannot help and the deployment has to be migrated.
+  if (isPermanentSchemaFault(code)) {
+    console.error(
+      `[db] PERMANENT SCHEMA FAULT (code=${String(code)}) — the target database is missing schema this build requires. ` +
+        `This is a DEPLOYMENT fault, not a transient one: apply the outstanding migration(s) (run \`bun run db:check-schema\` to see which). ` +
+        `Retrying the request will not help. ${
+          isPreviewEnvironment()
+            ? "Mode=preview (scratch database)."
+            : "Mode=production/other — check the release that shipped this build."
+        }`
+    );
+  }
   const safe = new Error(
     isPreviewEnvironment() ? PREVIEW_PENDING_MESSAGE : GENERIC_DB_ERROR_MESSAGE
   ) as Error & { code?: string; rawDbMessage?: string };
