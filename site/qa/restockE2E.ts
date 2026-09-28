@@ -324,7 +324,13 @@ const main = async () => {
       check((await unitControl.evaluate((el: any) => el.tagName)) === "SELECT", `width ${width}: the unit is not a real control`);
       check((await unitControl.inputValue()) === "bales", `width ${width}: the unit control does not show "bales"`);
       // blank cost → inventory-only label (no $0 expense can be created silently)
-      const submit = page.locator('[data-testid="restock-form"] [data-testid="restock-submit"]');
+      //
+      // The submit button is NOT a descendant of the <form>: it lives in the
+      // modal's footer and is wired to the form by `form="restock-form"`
+      // (FeedModals.tsx:654-657). It therefore stays UNSCOPED — and it is unique
+      // on the page (no history row renders a restock-submit), so strict mode is
+      // safe here.
+      const submit = page.locator('[data-testid="restock-submit"]');
       check(
         (await submit.innerText()).trim() === "Save restock (inventory only)",
         `width ${width}: submit label with a blank cost is not the inventory-only label`
