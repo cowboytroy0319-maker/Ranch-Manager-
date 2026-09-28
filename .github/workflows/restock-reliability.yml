@@ -57,7 +57,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      # NOTE: the app lives in site/, NOT at the repo root — every bun/psql step
+      # must run there or `bun install` fails with "could not find a package.json".
       - name: Install dependencies
+        working-directory: site
         run: bun install --frozen-lockfile
       - name: Unit + integration suite (guarantees, D2/D3/D4)
         run: bun test
