@@ -1,0 +1,118 @@
+# ============================================================================
+# RESTOCK → EXPENSES RELIABILITY GATE
+#
+# The owner's single workflow — "a restock saves inventory and creates exactly
+# one linked expense, every time" — must fail here, in CI, before it can fail in
+# front of the owner again.
+#
+# Two gates, both on a throwaway local Postgres (NEVER production):
+#   1. `bun test` — the transaction/idempotency/edit/void guarantees plus the
+#      D2 (defensive ledger read), D3 (permanent schema fault logging) and
+#      D4 (deploy-time schema gate) checks.
+#   2. `bun run e2e:restock` — the SAME test driven through the real UI in a real
+#      browser at 375 / 390 / 430 px, against a preview-mode server and the
+#      preview scratch database, using the owner's numbers (25 bales, "Triple C
+#      Hay", today, $312.50). Screenshots are kept as the artifact.
+#
+# Playwright is installed here rather than declared in package.json: the app
+# itself must not depend on a browser to build, and qa/restockE2E.ts imports it
+# dynamically so it typechecks in a checkout where Playwright is absent.
+# ============================================================================
+name: restock-reliability
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  restock-reliability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ranch_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_ci
+      # The preview scratch database for the E2E — a THROWAWAY database in this
+      # job, created below. No production URL is ever used here.
+      PREVIEW_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_preview
+      APP_ENV: preview
+      PREVIEW_LOGIN_PASSWORD: ci-preview-only-password
+      E2E_PROOF_DIR: ${{ github.workspace }}/proof/restock-e2e
+      E2E_BASE_URL: http://127.0.0.1:3000
+      PREVIEW_LOGIN_CRED_FILE: ${{ github.workspace }}/.local/preview-login.env
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Unit + integration suite (guarantees, D2/D3/D4)
+        run: bun test
+        working-directory: site
+      - name: Install Playwright (E2E only)
+        run: bun add -d playwright@1.63.0 && bunx playwright install --with-deps chromium
+        working-directory: site
+      - name: Create the preview scratch database
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE ranch_preview" \
+            || PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "DROP DATABASE ranch_preview" && \
+               PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE ranch_preview"
+      - name: Deploy-time schema gate must PASS on a migrated database
+        run: bun run db:migrate && bun run db:check-schema
+        working-directory: site
+        env:
+          APP_ENV: ""
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_ci
+      - name: Deploy-time schema gate must REFUSE an un-migrated database
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE ranch_unmigrated"
+          if APP_ENV= DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/ranch_unmigrated bun run db:check-schema; then
+            echo "::error::db:check-schema passed on an un-migrated database"; exit 1
+          fi
+          echo "gate correctly refused the un-migrated database"
+        working-directory: site
+      - name: Seed the preview fixture (preview-only, refuses otherwise)
+        run: bun run db:seed
+        working-directory: site
+      - name: Seed refuses to run outside preview mode
+        run: |
+          if APP_ENV= DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/ranch_ci bun run db:seed; then
+            echo "::error::db:seed ran outside APP_ENV=preview"; exit 1
+          fi
+          echo "seed correctly refused a non-preview database"
+        working-directory: site
+      - name: Start the preview-mode server
+        run: |
+          bun run dev > /tmp/preview-server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:3000/ >/dev/null && exit 0
+            sleep 2
+          done
+          echo "::error::the preview server never answered"; tail -50 /tmp/preview-server.log; exit 1
+        working-directory: site
+      - name: Browser E2E — real UI at 375 / 390 / 430 px
+        run: bun run e2e:restock
+        working-directory: site
+      - name: Upload form + Expenses screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restock-e2e-proof
+          path: proof/restock-e2e
+          if-no-files-found: warn
+      - name: Server log on failure
+        if: failure()
+        run: tail -100 /tmp/preview-server.log || true
