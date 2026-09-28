@@ -16,8 +16,10 @@
  * PREVIEW direction (APP_ENV === "preview") — refuse when:
  *   1. `PREVIEW_DATABASE_URL` is missing/blank                → PREVIEW_DATABASE_URL_MISSING
  *   2. the preview target `host:port/dbname` is identical to
- *      `DATABASE_URL`'s target, or its host equals the
- *      production host                                        → PREVIEW_TARGET_EQUALS_PRODUCTION
+ *      `DATABASE_URL`'s target, or the preview points at a
+ *      PRODUCTION-MARKED host (a hosted/Neon endpoint, or a
+ *      "prod…" name) — a host-only match is NOT a refusal, so
+ *      two scratch databases on the same host can coexist     → PREVIEW_TARGET_EQUALS_PRODUCTION
  *   3. `PREVIEW_ENV_EXPECTED` is set but `APP_ENV !== "preview"`
  *      (the hole that let the preview reach production)        → PREVIEW_ENV_EXPECTED_BUT_NOT_PREVIEW
  *
@@ -202,13 +204,21 @@ export const evaluateDatabaseGuard = (env: NodeJS.ProcessEnv = process.env): DbG
         rule: "PREVIEW_TARGET_EQUALS_PRODUCTION",
         detail: `preview target ${previewTarget.id} is the SAME target as ${DATABASE_URL_VAR} (${productionTarget?.id}) — refusing to run preview traffic against the production database.`,
       };
-    } else if (
-      productionTarget &&
-      previewTarget.host === productionTarget.host
-    ) {
+    } else if (isProductionMarkedTarget(previewTarget)) {
+      // The target is compared WHOLE (host + port + database) above, so two
+      // scratch databases that merely share a host — the CI runner's
+      // `127.0.0.1:5432/ranch_ci` vs `127.0.0.1:5432/ranch_preview`, or a laptop
+      // running both — are correctly allowed. What must still refuse is a
+      // preview pointed at something that is NOT a scratch database: a
+      // hosted/Neon endpoint (where a different database name is no comfort) or
+      // a "prod…" name. Sharing the production HOST when that host is a hosted
+      // production endpoint is exactly that case.
       refusal = {
         rule: "PREVIEW_TARGET_EQUALS_PRODUCTION",
-        detail: `preview target host ${previewTarget.host} matches the production host ${productionTarget.host} — refusing to run preview traffic against the production host.`,
+        detail:
+          `preview target ${previewTarget.id} is not a scratch database — its host ${previewTarget.host} ` +
+          `is a production-marked/hosted host${productionTarget ? ` (production host ${productionTarget.host})` : ""} ` +
+          `— refusing to run preview traffic against it.`,
       };
     }
     return {

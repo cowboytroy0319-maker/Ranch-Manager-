@@ -7,8 +7,12 @@
 //
 //   PREVIEW direction   APP_ENV=preview with
 //     • PREVIEW_DATABASE_URL missing/blank          → PREVIEW_DATABASE_URL_MISSING
-//     • preview target == production target         → PREVIEW_TARGET_EQUALS_PRODUCTION
-//     • preview host == production host             → PREVIEW_TARGET_EQUALS_PRODUCTION
+//     • preview target == production target, whole
+//       identity host+port+database                 → PREVIEW_TARGET_EQUALS_PRODUCTION
+//     • preview pointing at a production-marked /
+//       hosted (Neon, "prod…") host                 → PREVIEW_TARGET_EQUALS_PRODUCTION
+//       (a mere SHARED HOST is NOT a refusal — see
+//        "SAME host, DIFFERENT database (the CI pair)")
 //     • a preview URL that cannot be parsed         → PREVIEW_DATABASE_URL_UNPARSEABLE
 //   PRODUCTION direction  APP_ENV unset/anything-else with
 //     • PREVIEW_ENV_EXPECTED set                    → PREVIEW_ENV_EXPECTED_BUT_NOT_PREVIEW
@@ -138,7 +142,7 @@ describe("PREVIEW direction — APP_ENV=preview", () => {
     expect(g.refusal?.rule).toBe("PREVIEW_TARGET_EQUALS_PRODUCTION");
   });
 
-  test("preview HOST equal to the production host (different db) → refused", () => {
+  test("preview on a PRODUCTION-MARKED host, different db → refused", () => {
     const g = evaluateDatabaseGuard(
       env({
         APP_ENV: "preview",
@@ -148,6 +152,94 @@ describe("PREVIEW direction — APP_ENV=preview", () => {
     );
     expect(g.refusal?.rule).toBe("PREVIEW_TARGET_EQUALS_PRODUCTION");
     expect(g.effectiveUrl === undefined).toBe(true);
+    // The refusal says WHY: a hosted/production-marked host, not a db-name match.
+    expect(g.refusal?.detail).toContain("hosted");
+  });
+
+  // -------------------------------------------------------------------------
+  // The whole-target comparison (CI blocked on this). Both CI databases live on
+  // 127.0.0.1: a host-only comparison could not tell `ranch_ci` from
+  // `ranch_preview` and refused a perfectly safe preview. The guard must now
+  // compare host + port + database, while refusing EXACTLY as loudly as before
+  // everything that could reach production.
+  // -------------------------------------------------------------------------
+  test("SAME host, DIFFERENT database (the CI pair) → ALLOWED", () => {
+    const g = evaluateDatabaseGuard(
+      env({
+        APP_ENV: "preview",
+        PREVIEW_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/ranch_preview",
+        DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/ranch_ci",
+      })
+    );
+    expect(g.refusal).toBeNull();
+    expect(g.ok).toBe(true);
+    expect(g.effectiveUrl).toBe("postgres://postgres:postgres@127.0.0.1:5432/ranch_preview");
+    expect(g.equalsProductionTarget).toBe(false);
+    // …and the two scratch targets are still identifiable as different.
+    expect(targetKey(g.target)).toBe("127.0.0.1:5432/ranch_preview");
+    expect(targetKey(g.productionTarget)).toBe("127.0.0.1:5432/ranch_ci");
+  });
+
+  test("SAME host AND database, different PORT → ALLOWED (port is part of the target)", () => {
+    const g = evaluateDatabaseGuard(
+      env({
+        APP_ENV: "preview",
+        PREVIEW_DATABASE_URL: "postgres://postgres:pw@127.0.0.1:5433/ranch",
+        DATABASE_URL: "postgres://postgres:pw@127.0.0.1:5432/ranch",
+      })
+    );
+    expect(g.refusal).toBeNull();
+    expect(g.ok).toBe(true);
+  });
+
+  test("IDENTICAL full target (host:port/database) → STILL REFUSED", () => {
+    const g = evaluateDatabaseGuard(
+      env({
+        APP_ENV: "preview",
+        PREVIEW_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/ranch_ci",
+        DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/ranch_ci",
+      })
+    );
+    expect(g.refusal?.rule).toBe("PREVIEW_TARGET_EQUALS_PRODUCTION");
+    expect(g.effectiveUrl === undefined).toBe(true);
+    expect(g.ok).toBe(false);
+  });
+
+  test("a local preview whose database IS the production one (same host, same db, different user) → refused", () => {
+    const g = evaluateDatabaseGuard(
+      env({
+        APP_ENV: "preview",
+        PREVIEW_DATABASE_URL: "postgres://preview_app:pw@127.0.0.1:5432/ranch_ci",
+        DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/ranch_ci",
+      })
+    );
+    expect(g.refusal?.rule).toBe("PREVIEW_TARGET_EQUALS_PRODUCTION");
+    expect(g.ok).toBe(false);
+  });
+
+  test("the operator guard (db:seed / db:migrate) still refuses the CI pair's preview target — no bypass flag needed", () => {
+    // The seed must keep working on 127.0.0.1:5432/ranch_preview with
+    // DATABASE_URL pointing at the CI scratch database.
+    const check = evaluateOperatorTarget(
+      env({
+        APP_ENV: "preview",
+        PREVIEW_ENV_EXPECTED: "1",
+        PREVIEW_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/ranch_preview",
+        DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/ranch_ci",
+      })
+    );
+    expect(check.safe).toBe(true);
+    expect(check.rule).toBeNull();
+    // …and it still refuses the same host when the database IS production's.
+    const unsafe = evaluateOperatorTarget(
+      env({
+        APP_ENV: "preview",
+        PREVIEW_DATABASE_URL: "postgres://preview_app:pw@ep-gentle-band-awddfg7l-pooler.c-12.us-east-1.aws.neon.tech/neondb",
+        DATABASE_URL: NEON,
+      })
+    );
+    expect(unsafe.safe).toBe(false);
+    expect(unsafe.overridable).toBe(false); // ← not even --allow-production clears this
   });
 });
 
