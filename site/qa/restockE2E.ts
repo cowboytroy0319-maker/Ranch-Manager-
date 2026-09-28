@@ -272,7 +272,8 @@ const main = async () => {
       // real user can read. Both halves are checked separately so a failure says
       // which one broke. The rendered labels are recorded as evidence.
       // ---------------------------------------------------------------------
-      const fieldLabels = await page
+      type RenderedLabel = { source: string; rendered: string };
+      const fieldLabels: RenderedLabel[] = await page
         .locator('[data-testid="restock-form"]')
         .locator("xpath=ancestor::div[1]")
         .locator("label")
