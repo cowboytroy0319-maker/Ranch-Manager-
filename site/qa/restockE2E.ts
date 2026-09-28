@@ -729,13 +729,43 @@ const main = async () => {
 
       // The ids the two taps actually sent, read out of the raw request bodies.
       const doubleTapRequests = serverFnCalls.filter((c) => c.body.includes("client_request_id"));
+      // The dev server serializes a server-fn call as { t: { p: { k: [...],
+      // v: [...] } } } — a KEY list and a PARALLEL VALUE list. The id therefore
+      // appears as a value node ({"t":1,"s":"<uuid>"}), NOT as a
+      // "client_request_id":"…" pair, which is why the first version of this
+      // reader returned "" for every request and the run failed its own new
+      // assertion ("a double-tap request carried no client_request_id").
+      // Read the envelope: find the { k, v } node whose key list contains
+      // client_request_id and take the value at the same index; fall back to a
+      // UUID scan of the raw body.
       const idOf = (body: string): string => {
+        const walk = (node: unknown): string => {
+          if (!node || typeof node !== "object") return "";
+          const obj = node as { k?: unknown; v?: unknown; s?: unknown };
+          if (Array.isArray(obj.k) && Array.isArray(obj.v)) {
+            const i = obj.k.indexOf("client_request_id");
+            const val = i >= 0 ? (obj.v as unknown[])[i] : undefined;
+            const s =
+              typeof val === "string"
+                ? val
+                : val && typeof val === "object"
+                  ? (val as { s?: unknown }).s
+                  : undefined;
+            if (typeof s === "string" && s.length > 0) return s;
+          }
+          for (const child of Object.values(obj as Record<string, unknown>)) {
+            const found = walk(child);
+            if (found) return found;
+          }
+          return "";
+        };
         try {
-          const parsed = JSON.parse(body) as { client_request_id?: string; data?: { client_request_id?: string } };
-          return parsed?.data?.client_request_id ?? parsed?.client_request_id ?? "";
+          const found = walk(JSON.parse(body) as unknown);
+          if (found) return found;
         } catch {
-          return /"client_request_id"\s*:\s*"([^"]+)"/.exec(body)?.[1] ?? "";
+          /* fall through to the raw scan */
         }
+        return /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.exec(body)?.[0] ?? "";
       };
       const doubleTapIds = doubleTapRequests.map((c) => idOf(c.body));
       const sameRequestId = doubleTapIds.length > 1 && new Set(doubleTapIds).size === 1;
