@@ -66,12 +66,17 @@ jobs:
       # The preview-mode firewall tests need their OWN local database (they
       # refuse a preview whose target equals production), so create it before
       # the suite runs — exactly as site/scripts/preview-env.sh does locally and
-      # as ci.yml does. Never dropped: a re-run just fails the CREATE.
+      # as ci.yml does. Drop-then-create so a re-run of the same job is green.
       - name: Create the preview scratch database
         run: |
-          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE ranch_preview" \
-            || PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "DROP DATABASE ranch_preview" && \
-               PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE ranch_preview"
+          # Idempotent on purpose. The previous version was `CREATE || DROP && CREATE`,
+          # which the shell parses as `(CREATE || DROP) && CREATE`: the CREATE always
+          # succeeded, the DROP was skipped, and the trailing CREATE then died with
+          # `database "ranch_preview" already exists` — failing the job before a single
+          # test ran. DROP ... WITH (FORCE) also survives a leftover connection.
+          PGPASSWORD=postgres psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres \
+            -c "DROP DATABASE IF EXISTS ranch_preview WITH (FORCE)" \
+            -c "CREATE DATABASE ranch_preview"
 
       # The DB-backed tests talk to the CI scratch database through DATABASE_URL
       # in PRODUCTION mode, exactly as ci.yml runs them. APP_ENV must therefore be

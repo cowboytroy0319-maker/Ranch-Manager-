@@ -28,6 +28,8 @@
  * `resetExpenseLinkColumnsCache()` after a schema change (tests do this).
  */
 
+import type { sql as sqlClient } from "~/db";
+
 /** Which of the 0018-only link columns exist on the resolved `expenses` table. */
 export type ExpenseLinkColumns = {
   paidBy: boolean;
@@ -62,7 +64,7 @@ export const hasAllExpenseLinkColumns = (cols: ExpenseLinkColumns): boolean =>
 /** The query surface this module needs — the app's own client, or a
  *  transaction handle. Kept as the client's own type so callers can pass either
  *  `sql()` or an injected handle without casts. */
-type ColumnQueryDb = ReturnType<typeof sql>;
+type ColumnQueryDb = ReturnType<typeof sqlClient>;
 
 let cache: ExpenseLinkColumns | null = null;
 let warned = false;

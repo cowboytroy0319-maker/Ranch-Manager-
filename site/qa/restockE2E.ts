@@ -251,12 +251,44 @@ const main = async () => {
       // =====================================================================
       await openRestock();
       const formText = (await page.locator('[data-testid="restock-form"]').innerText()).replace(/\s+/g, " ");
-      const modalText = (await page.locator('[data-testid="restock-form"]').locator("xpath=ancestor::div[1]").innerText()).replace(/\s+/g, " ");
       const helper = page.locator('[data-testid="restock-cost-helper"]');
       check(
         (await helper.innerText()).trim() === "Saving this restock will add this amount to Expenses.",
         `width ${width}: cost helper text is not the required sentence`
       );
+
+      // ---------------------------------------------------------------------
+      // THE FIELD LABELS, read from the RENDERED DOM rather than from the source.
+      //
+      // Why both `textContent` and `innerText`: the form's field labels carry the
+      // app's shared `uppercase` class, and `innerText` reports text AS RENDERED,
+      // so a user sees "QUANTITY ADDED (BALES) *" while the markup says
+      // "Quantity added (bales) *" — the same words, cased by CSS. A case-sensitive
+      // substring test against `innerText` therefore failed on a form that is
+      // perfectly correct (the earlier run's `the form is missing the visible field
+      // "Quantity added"`). CSS can change a label's CASE, never its words, so the
+      // assertion below is unchanged in strength: a `<label>` element must exist
+      // whose markup begins with the exact required words AND whose rendered text a
+      // real user can read. Both halves are checked separately so a failure says
+      // which one broke. The rendered labels are recorded as evidence.
+      // ---------------------------------------------------------------------
+      const fieldLabels = await page
+        .locator('[data-testid="restock-form"]')
+        .locator("xpath=ancestor::div[1]")
+        .locator("label")
+        .evaluateAll((els: any[]) =>
+          els.map((el: any) => ({
+            source: String(el.textContent ?? "").replace(/\s+/g, " ").trim(),
+            rendered: String(el.innerText ?? "").replace(/\s+/g, " ").trim(),
+          }))
+        );
+      check(fieldLabels.length > 0, `width ${width}: the restock form renders no field labels at all`);
+      record({
+        width,
+        step: "form-labels",
+        labelCount: fieldLabels.length,
+        renderedLabels: fieldLabels.map((l) => l.rendered).join(" | "),
+      });
       for (const needle of [
         "Quantity added",
         "Unit",
@@ -265,8 +297,14 @@ const main = async () => {
         "Total cost paid",
         "Notes / reference",
       ]) {
-        const visible = formText.includes(needle) || modalText.includes(needle);
-        check(visible, `width ${width}: the form is missing the visible field "${needle}"`);
+        const inMarkup = fieldLabels.some((l) => l.source.toLowerCase().startsWith(needle.toLowerCase()));
+        check(inMarkup, `width ${width}: no field label in the form markup begins "${needle}"`);
+        const visible = fieldLabels.some((l) => l.rendered.toLowerCase().startsWith(needle.toLowerCase()));
+        check(
+          visible,
+          `width ${width}: the field label "${needle}" is in the markup but not visible to a user ` +
+            `(rendered labels: ${fieldLabels.map((l) => l.rendered).join(" | ")})`
+        );
       }
       check(formText.includes("Add linked expense"), `width ${width}: "Add linked expense" choice is not visible`);
       check(
