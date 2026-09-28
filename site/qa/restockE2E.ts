@@ -18,7 +18,10 @@
  *   3. saving adds EXACTLY 25 bales for the owner's numbers (25 bales /
  *      "Triple C Hay" / today / $312.50) and creates exactly ONE linked expense;
  *   4. that expense is visible in Expenses immediately AND after a refresh;
- *   5. a fast double-submit creates NO duplicate expense and adds the stock once;
+ *   5. a REAL double tap — one filled form submitted twice, so both requests
+ *      carry the same client_request_id — adds the new stock ONCE and creates
+ *      NO duplicate expense (the two request bodies and their ids are written
+ *      to double-tap-<width>-requests.json as evidence);
  *   6. the "Inventory only — no expense" path creates NO expense at all (never a
  *      silent $0 row);
  *   7. edit updates the SAME expense row (no second row);
@@ -32,9 +35,19 @@
  * Credentials come from E2E_EMAIL / E2E_PASSWORD, or from the preview login file
  * written by `bun run db:seed` (PREVIEW_LOGIN_CRED_FILE, chmod 600). The password
  * is never printed.
+ *
+ * EVIDENCE LAYOUT (E2E_PROOF_DIR, default /home/team/shared/proof/restock-e2e):
+ * every run writes into its own `run-<UTC stamp>-<pid>/` directory and NOTHING
+ * is ever deleted, so a later run, a re-run of a single width, or a crash can
+ * only add to the proof set. The run prints `E2E proof=<file> bytes=<n> md5=<h>`
+ * for every artefact, writes `manifest.json`, and FAILS if any artefact it
+ * printed is missing or empty on disk, or if a file present before the run is
+ * gone afterwards. `LATEST.txt` names the newest run directory.
  * ============================================================================
  */
-import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, mkdirSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join, relative } from "node:path";
 import postgres from "postgres";
 // NOTE: Playwright is deliberately NOT a dependency of this app. The CI job
 // installs it (`bun add -d playwright@1.63.0` + `playwright install chromium`)
@@ -45,7 +58,29 @@ import postgres from "postgres";
 type AnyPage = any;
 
 const BASE_URL = (process.env.E2E_BASE_URL ?? "http://127.0.0.1:3000").replace(/\/$/, "");
-const PROOF_DIR = process.env.E2E_PROOF_DIR ?? "/home/team/shared/proof/restock-e2e";
+
+/**
+ * ============================================================================
+ * EVIDENCE THAT A LATER — OR FAILED — RUN CANNOT DESTROY.
+ *
+ * The proof set IS the deliverable: the owner asks for the screenshots, so a
+ * run that loses them has failed no matter what it printed. Two rules follow.
+ *
+ *   1. Each run writes into its OWN directory — `<E2E_PROOF_DIR>/run-<stamp>`.
+ *      Nothing is ever deleted or overwritten, so a second run, a re-run of one
+ *      width, or a crash halfway through can only ever ADD evidence. (A flat
+ *      layout is what lost an earlier proof set: one file per width meant the
+ *      next run reused the same paths.)
+ *   2. The run refuses to pass unless every artefact it wrote is still on disk,
+ *      non-empty, and every file that existed before it started still exists
+ *      afterwards. A wiped evidence directory is a FAILED run, not a detail.
+ * ============================================================================
+ */
+const PROOF_ROOT = process.env.E2E_PROOF_DIR ?? "/home/team/shared/proof/restock-e2e";
+const RUN_ID =
+  process.env.E2E_RUN_ID ??
+  `${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-${process.pid}`;
+const PROOF_DIR = join(PROOF_ROOT, `run-${RUN_ID}`);
 const CRED_FILE = process.env.PREVIEW_LOGIN_CRED_FILE ?? "/home/team/shared/.local/preview-login.env";
 const WIDTHS = (process.env.E2E_WIDTHS ?? "375,390,430")
   .split(",")
@@ -63,6 +98,7 @@ const EDITED_COST_CENTS = 35000;
 type Evidence = Record<string, string | number | boolean | null>;
 
 const evidence: Evidence[] = [];
+const startedAtIso = new Date().toISOString();
 const record = (patch: Evidence) => {
   evidence.push(patch);
   console.log(
@@ -78,27 +114,223 @@ const check = (condition: unknown, message: string): void => {
   if (!condition) throw new E2EFailure(message);
 };
 
+// --- evidence bookkeeping ---------------------------------------------------
+/** Every file this run wrote, in write order (absolute paths). */
+const artifacts: string[] = [];
+
+/** List every file under a directory, recursively and relatively, or [] if absent. */
+const listFiles = (dir: string): string[] => {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listFiles(full));
+    else if (entry.isFile()) out.push(relative(PROOF_ROOT, full));
+  }
+  return out.sort();
+};
+
+const shot = async (page: AnyPage, name: string): Promise<string> => {
+  const path = join(PROOF_DIR, name);
+  await page.screenshot({ path, fullPage: false });
+  artifacts.push(path);
+  return path;
+};
+
+const writeEvidence = (name: string, body: string): string => {
+  const path = join(PROOF_DIR, name);
+  writeFileSync(path, body);
+  artifacts.push(path);
+  return path;
+};
+
+const md5 = (path: string): string => createHash("md5").update(readFileSync(path)).digest("hex");
+
 /**
- * Wait until React has HYDRATED the document.
+ * The last thing a passing run does: prove ON DISK that the evidence it just
+ * printed really exists, and that nothing that was there before it is gone.
+ * Either failure means the run FAILS — a proof set nobody can open is not a
+ * proof set, and a wiped evidence directory is not an acceptable outcome.
+ */
+const verifyEvidence = (preExisting: string[]): void => {
+  const rows: string[] = [];
+  for (const path of artifacts) {
+    const rel = relative(PROOF_ROOT, path);
+    check(existsSync(path), `evidence ${rel} was printed but is NOT on disk`);
+    const size = statSync(path).size;
+    check(size > 0, `evidence ${rel} is on disk but EMPTY`);
+    rows.push(`E2E proof=${rel} bytes=${size} md5=${md5(path)}`);
+  }
+  for (const rel of preExisting) {
+    check(
+      existsSync(join(PROOF_ROOT, rel)),
+      `this run DESTROYED evidence written earlier: ${rel} is gone from ${PROOF_ROOT}`
+    );
+  }
+  const manifest = {
+    runId: RUN_ID,
+    startedAt: startedAtIso,
+    baseUrl: BASE_URL,
+    widths: WIDTHS.join(","),
+    proofDir: PROOF_DIR,
+    artifacts: artifacts.map((p) => ({
+      file: relative(PROOF_ROOT, p),
+      bytes: statSync(p).size,
+      md5: md5(p),
+    })),
+    preExistingArtifacts: preExisting,
+  };
+  const manifestPath = writeEvidence("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+  rows.push(
+    `E2E proof=${relative(PROOF_ROOT, manifestPath)} bytes=${statSync(manifestPath).size} md5=${md5(
+      manifestPath
+    )}`
+  );
+  // A single, stable pointer for a human: the newest run directory. Never
+  // evidence itself, so overwriting it can lose nothing.
+  writeFileSync(join(PROOF_ROOT, "LATEST.txt"), `${PROOF_DIR}\n`);
+  for (const row of rows) console.log(row);
+  console.log(
+    `E2E evidence verified on disk: ${artifacts.length} file(s) in ${PROOF_DIR}; ` +
+      `${preExisting.length} earlier file(s) still present under ${PROOF_ROOT}`
+  );
+};
+
+/**
+ * Is React genuinely attached to this document?
  *
  * A dev-server page is served and painted well before its client JS runs. A tap
  * in that window is handled by the BROWSER, not the app: the form does a native
  * GET submit and the app's own onSubmit never fires, which looks exactly like a
- * failed sign-in ("/login?" with no error and no server-function call). A real
- * user taps a page that is already interactive, so the E2E must wait for the
- * same state instead of racing the bundle.
+ * failed sign-in ("/login?" with no error and no server-function call). React
+ * marks the host nodes it has committed to with `__reactFiber$…` AND
+ * `__reactProps$…`; an un-hydrated document has neither. Waiting for that pair
+ * is a real signal, not a sleep, so it holds on a cold CI runner too.
  */
-const waitForHydration = async (page: AnyPage): Promise<void> => {
+const HYDRATED = (): boolean =>
+  Array.from(document.querySelectorAll("body *")).some((el) => {
+    const keys = Object.keys(el);
+    return keys.some((k) => k.startsWith("__reactFiber$")) && keys.some((k) => k.startsWith("__reactProps$"));
+  });
+
+const isHydrated = async (page: AnyPage, timeoutMs: number): Promise<boolean> =>
   await page
-    .waitForFunction(
-      () =>
-        Array.from(document.querySelectorAll("body *")).some((el) =>
-          Object.keys(el).some((k) => k.startsWith("__reactFiber$"))
-        ),
-      null,
-      { timeout: 30000 }
-    )
-    .catch(() => undefined);
+    .waitForFunction(HYDRATED, null, { timeout: timeoutMs })
+    .then(() => true)
+    .catch(() => false);
+
+/** Reload and wait until the FRESH document is interactive again — never a sleep. */
+const reloadHydrated = async (page: AnyPage): Promise<number> => {
+  let last = "never attempted";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+    } catch (err) {
+      last = `reload failed: ${err instanceof Error ? err.message : String(err)}`;
+      continue;
+    }
+    if (await isHydrated(page, 45000)) return attempt;
+    last = "the reloaded document never became interactive within 45s";
+    console.log(`E2E hydration retry: ${last} (attempt ${attempt}/3)`);
+  }
+  throw new E2EFailure(`the page was never interactive after a reload — ${last}`);
+};
+
+/**
+ * Navigate until the page is INTERACTIVE — never a fixed sleep.
+ *
+ * The first request for a route on a cold dev server compiles that route, so
+ * hydration can lag the paint by tens of seconds (this is exactly what failed
+ * the CI browser step: the document rendered, but React was not attached yet,
+ * and the tap fell through to a native browser submit). Reloading and waiting
+ * again is what a person does with a slow page; the alternative — swallowing a
+ * timeout and clicking anyway — silently tests the wrong thing.
+ */
+const gotoHydrated = async (page: AnyPage, url: string, label: string): Promise<number> => {
+  let last = "never attempted";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    } catch (err) {
+      last = `navigation failed: ${err instanceof Error ? err.message : String(err)}`;
+      continue;
+    }
+    if (await isHydrated(page, 45000)) {
+      if (attempt > 1) record({ step: "hydrated-after-retry", page: label, attempts: attempt });
+      return attempt;
+    }
+    last = `${label} rendered but React never hydrated it within 45s`;
+    console.log(`E2E hydration retry: ${last} (attempt ${attempt}/3) — loading it again`);
+  }
+  throw new E2EFailure(`${label} was never interactive after 3 loads — ${last}`);
+};
+
+/**
+ * Sign in on a page that is genuinely interactive, and RETRY ONCE if the tap
+ * was handled by the browser instead of the app.
+ *
+ * A pre-hydration tap produces a native GET submit: the browser reloads
+ * "/login?" with no query, no error and no server-function call — which is
+ * indistinguishable from a wrong password if you only look at the URL. It is
+ * detectable, though: the click caused a full document navigation, or the URL
+ * kept a "?" with nothing after it. On that evidence the run reloads, waits for
+ * hydration again and taps once more. A real sign-in failure still fails, with
+ * the URL, whether it looked like a native submit, and the page's own text.
+ */
+const signIn = async (
+  page: AnyPage,
+  width: number,
+  creds: { email: string; password: string }
+): Promise<void> => {
+  const navigations: string[] = [];
+  const onNav = (frame: AnyPage) => {
+    if (frame === page.mainFrame()) navigations.push(frame.url());
+  };
+  page.on("framenavigated", onNav);
+  try {
+    await gotoHydrated(page, `${BASE_URL}/login`, "the sign-in page");
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await page.fill("#login-email", creds.email);
+      await page.fill("#login-password", creds.password);
+      const loginsBefore = navigations.length;
+      await page.click('button[type="submit"]');
+      try {
+        await page.waitForURL((u: AnyPage) => !u.pathname.startsWith("/login"), { timeout: 45000 });
+        if (attempt > 1) {
+          record({ width, step: "login-retry", attempt, outcome: "signed in on the retry", url: page.url() });
+        }
+        return;
+      } catch (err) {
+        const url = page.url();
+        // Two shapes of native submit: the browser reloaded the document
+        // ("/login?"), or nothing at all happened because React never attached
+        // the handler. Either way the app's own onSubmit did not run.
+        const reloaded = navigations.length > loginsBefore;
+        const nativeSubmit = reloaded || url.includes("?");
+        const bodyText = await page
+          .evaluate(() => String(document.body?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 300))
+          .catch(() => "");
+        if (attempt === 2) {
+          throw new E2EFailure(
+            `width ${width}: could not sign in — still at ${url} after 2 attempts. ` +
+              `Native-submit detected: ${nativeSubmit} (full page navigation during the click: ${reloaded}). ` +
+              `The sign-in page said: "${bodyText}". ` +
+              `Underlying error: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+        record({
+          width,
+          step: "login-native-submit",
+          url,
+          fullPageNavigationDuringClick: reloaded,
+          action: "reloading and retrying once on a hydrated page",
+        });
+        await gotoHydrated(page, `${BASE_URL}/login`, "the sign-in page (retry)");
+      }
+    }
+  } finally {
+    page.off("framenavigated", onNav);
+  }
 };
 
 /** Read the preview env file if the URL was not exported (silent; nothing printed). */
@@ -178,6 +410,12 @@ const restockCount = async (operationId: number): Promise<number> => {
 
 const main = async () => {
   mkdirSync(PROOF_DIR, { recursive: true });
+  // Whatever is already under the proof root belongs to earlier runs and must
+  // survive this one (checked again in verifyEvidence before the run may pass).
+  const preExisting = listFiles(PROOF_ROOT).filter((rel) => !rel.startsWith(`run-${RUN_ID}/`));
+  console.log(
+    `E2E run=${RUN_ID} proofDir=${PROOF_DIR} earlierArtifactsUnderRoot=${preExisting.length}`
+  );
   const creds = credentials();
   const pwModule = process.env.E2E_PLAYWRIGHT_MODULE ?? "playwright";
   const playwright = (await import(pwModule)) as any;
@@ -228,18 +466,10 @@ const main = async () => {
       });
 
       // ---- sign in (real login form) -------------------------------------
-      await page.goto(`${BASE_URL}/login`, { waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
-      await page.fill("#login-email", creds.email);
-      await page.fill("#login-password", creds.password);
-      await Promise.all([
-        page.waitForURL((u: any) => !u.pathname.startsWith("/login"), { timeout: 30000 }),
-        page.click('button[type="submit"]'),
-      ]);
+      await signIn(page, width, creds);
 
       // ---- /feed: the fixture stack and its Restock button ---------------
-      await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await gotoHydrated(page, `${BASE_URL}/feed`, "the /feed page");
       const qtyCell = page.locator(`[data-testid="hay-qty-${hayId}"]`);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const baseline = Number(await qtyCell.getAttribute("data-quantity"));
@@ -355,7 +585,7 @@ const main = async () => {
         (await submit.innerText()).trim() === "Save restock & add expense",
         `width ${width}: submit label with a cost is not "Save restock & add expense"`
       );
-      await page.screenshot({ path: `${PROOF_DIR}/form-${width}-filled.png`, fullPage: false });
+      await shot(page, `form-${width}-filled.png`);
 
       // =====================================================================
       // 2. SAVE — 25 bales + exactly one linked expense
@@ -385,7 +615,7 @@ const main = async () => {
         return undefined;
       })();
       check(createCall, `width ${width}: no restock request was observed`);
-      writeFileSync(`${PROOF_DIR}/server-fn-${width}.json`, createCall!.text);
+      writeEvidence(`server-fn-${width}.json`, createCall!.text);
       check(
         createCall!.status === 200,
         `width ${width}: the restock request answered HTTP ${createCall!.status} (raw body in server-fn-${width}.json)`
@@ -407,8 +637,7 @@ const main = async () => {
         banner: bannerText,
       });
 
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await reloadHydrated(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const afterCreate = Number(await qtyCell.getAttribute("data-quantity"));
       const afterCreateDb = await hayRow(hayId);
@@ -429,8 +658,7 @@ const main = async () => {
       );
 
       // ---- Expenses shows it immediately, and after a refresh -------------
-      await page.goto(`${BASE_URL}/expenses`, { waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await gotoHydrated(page, `${BASE_URL}/expenses`, "the Expenses page");
       const linkedRow = page.locator(`[data-testid="expense-row-${expenseId}"]`);
       await linkedRow.waitFor({ state: "visible", timeout: 30000 });
       check(
@@ -441,11 +669,10 @@ const main = async () => {
         (await linkedRow.locator('[data-testid="expense-vendor"]').innerText()).includes(VENDOR),
         `width ${width}: the Expenses row does not show the vendor`
       );
-      await page.screenshot({ path: `${PROOF_DIR}/expenses-${width}.png`, fullPage: false });
+      await shot(page, `expenses-${width}.png`);
       const visibleLinkedRows = await page.locator('[data-testid^="expense-row-"][data-linked="true"]').count();
       check(visibleLinkedRows === 1, `width ${width}: expected exactly 1 linked ledger row, saw ${visibleLinkedRows}`);
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await reloadHydrated(page);
       await linkedRow.waitFor({ state: "visible", timeout: 30000 });
       check(
         (await linkedRow.locator('[data-testid="expense-amount"]').getAttribute("data-amount-cents")) === String(COST_CENTS),
@@ -467,8 +694,7 @@ const main = async () => {
       // =====================================================================
       // 3. FAST DOUBLE-SUBMIT — no duplicate expense, stock added once
       // =====================================================================
-      await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await gotoHydrated(page, `${BASE_URL}/feed`, "the /feed page");
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       await openRestock();
       await page.locator('[data-testid="restock-form"] [data-testid="restock-quantity"]').fill("10");
@@ -478,6 +704,14 @@ const main = async () => {
       await page.locator('[data-testid="restock-form"] [data-testid="restock-cost"]').fill("99.00");
       await page.locator('[data-testid="restock-form"] [data-testid="restock-vendor"]').fill("Double Tap Hay");
       const beforeDouble = baseline + QTY;
+      // THIS IS A REAL DOUBLE TAP: one form, filled once, submitted twice back
+      // to back — so both requests carry the SAME client_request_id (the app
+      // generates it once per form-open). Two requests must therefore add the
+      // new stock ONCE. Count only THIS step's requests: earlier steps' calls
+      // are still in serverFnCalls, and counting them made the old log read
+      // "requestsObserved=3" for a two-request tap.
+      const DOUBLE_TAP_BALES = 10;
+      serverFnCalls.length = 0;
       await page.evaluate(() => {
         const form = document.querySelector('[data-testid="restock-form"]') as HTMLFormElement | null;
         if (!form) throw new Error("restock form missing");
@@ -485,27 +719,76 @@ const main = async () => {
         form.requestSubmit();
       });
       await page.locator('[data-testid="restock-form"]').waitFor({ state: "detached", timeout: 20000 });
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await reloadHydrated(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const afterDouble = Number(await qtyCell.getAttribute("data-quantity"));
       const dbAfterDouble = await hayRow(hayId);
       const restocksAfterDouble = await restockCount(opId);
       const expensesAfterDouble = await linkedExpenses(opId);
       const doubleTapExpenses = expensesAfterDouble.filter((e) => e.vendor === "Double Tap Hay");
-      check(afterDouble === beforeDouble + 10, `width ${width}: double-submit added ${afterDouble - beforeDouble} instead of 10`);
-      check(dbAfterDouble.quantity === beforeDouble + 10, `width ${width}: DB inventory double-counted the restock`);
+
+      // The ids the two taps actually sent, read out of the raw request bodies.
+      const doubleTapRequests = serverFnCalls.filter((c) => c.body.includes("client_request_id"));
+      const idOf = (body: string): string => {
+        try {
+          const parsed = JSON.parse(body) as { client_request_id?: string; data?: { client_request_id?: string } };
+          return parsed?.data?.client_request_id ?? parsed?.client_request_id ?? "";
+        } catch {
+          return /"client_request_id"\s*:\s*"([^"]+)"/.exec(body)?.[1] ?? "";
+        }
+      };
+      const doubleTapIds = doubleTapRequests.map((c) => idOf(c.body));
+      const sameRequestId = doubleTapIds.length > 1 && new Set(doubleTapIds).size === 1;
+      const quantityDelta = afterDouble - beforeDouble;
+      writeEvidence(
+        `double-tap-${width}-requests.json`,
+        `${JSON.stringify(
+          {
+            note:
+              "One form, one client_request_id, submitted twice. Both requests must resolve to a single restock.",
+            restockBales: DOUBLE_TAP_BALES,
+            requests: doubleTapRequests.map((c) => ({ httpStatus: c.status, body: c.body })),
+            clientRequestIds: doubleTapIds,
+            distinctClientRequestIds: new Set(doubleTapIds).size,
+          },
+          null,
+          2
+        )}\n`
+      );
+
+      check(
+        quantityDelta === DOUBLE_TAP_BALES,
+        `width ${width}: a double tap of a ${DOUBLE_TAP_BALES}-bale restock moved inventory by ${quantityDelta}, not ${DOUBLE_TAP_BALES} — the same submission was applied more than once`
+      );
+      check(dbAfterDouble.quantity === beforeDouble + DOUBLE_TAP_BALES, `width ${width}: DB inventory double-counted the restock`);
       check(restocksAfterDouble === 2, `width ${width}: double-submit created ${restocksAfterDouble - 1} extra restock rows`);
       check(doubleTapExpenses.length === 1, `width ${width}: double-submit created ${doubleTapExpenses.length} expenses instead of 1`);
-      const duplicateReplies = serverFnCalls.filter((c) => c.body.includes("client_request_id"));
+      check(doubleTapRequests.length >= 1, `width ${width}: the double tap produced no restock request at all`);
+      check(
+        doubleTapIds.every((id) => id.length > 0),
+        `width ${width}: a double-tap request carried no client_request_id`
+      );
+      // A stronger claim than before: if the second tap really reached the
+      // server, the two requests must have carried the SAME id — otherwise the
+      // run would be "proving" idempotency with two unrelated submissions.
+      check(
+        doubleTapRequests.length < 2 || sameRequestId,
+        `width ${width}: the two taps carried DIFFERENT client_request_ids (${doubleTapIds.join(", ")}) — this is not a double tap`
+      );
       record({
         width,
         step: "double-submit",
-        requestsObserved: duplicateReplies.length,
+        restockBales: DOUBLE_TAP_BALES,
+        requestsSeenForThisTap: doubleTapRequests.length,
+        sameClientRequestId: doubleTapRequests.length < 2 ? "n/a (only one request reached the server)" : sameRequestId,
+        clientRequestIdsDistinct: new Set(doubleTapIds).size,
         quantityBefore: beforeDouble,
         quantityAfter: afterDouble,
-        restockRows: restocksAfterDouble,
-        expensesForThatRestock: doubleTapExpenses.length,
+        quantityDelta: quantityDelta,
+        applications: quantityDelta / DOUBLE_TAP_BALES,
+        restockRowsForOperation: restocksAfterDouble,
+        expensesForThisRestock: doubleTapExpenses.length,
+        ledgerExpensesTotal: expensesAfterDouble.length,
       });
       // clean up the double-submit restock through the UI (void)
       await voidRestock(page, width, "double-submit");
@@ -515,8 +798,7 @@ const main = async () => {
       // =====================================================================
       // 4. INVENTORY ONLY — no expense of any kind
       // =====================================================================
-      await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await gotoHydrated(page, `${BASE_URL}/feed`, "the /feed page");
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const expensesBeforeInventoryOnly = await allExpenses(opId);
       await openRestock();
@@ -532,11 +814,10 @@ const main = async () => {
         (await submit.innerText()).trim() === "Save restock (inventory only)",
         `width ${width}: blank-cost submit label is not the inventory-only label`
       );
-      await page.screenshot({ path: `${PROOF_DIR}/form-${width}-inventory-only.png`, fullPage: false });
+      await shot(page, `form-${width}-inventory-only.png`);
       await submit.click();
       await page.locator('[data-testid="restock-form"]').waitFor({ state: "detached", timeout: 20000 });
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await reloadHydrated(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const afterInventoryOnly = Number(await qtyCell.getAttribute("data-quantity"));
       const expensesAfterInventoryOnly = await allExpenses(opId);
@@ -558,8 +839,7 @@ const main = async () => {
       // =====================================================================
       // 5. EDIT — the SAME expense row is updated
       // =====================================================================
-      await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await gotoHydrated(page, `${BASE_URL}/feed`, "the /feed page");
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       await page.locator('[data-testid^="restock-row-"]').first().getByRole("button", { name: "Edit" }).click();
       const editForm = page.locator('[data-testid="restock-edit-form"]');
@@ -567,11 +847,10 @@ const main = async () => {
       await page.locator('[data-testid="restock-edit-quantity"]').fill(String(EDITED_QTY));
       await page.locator('[data-testid="restock-edit-cost"]').fill(EDITED_COST.toFixed(2));
       await page.locator('[data-testid="restock-edit-vendor"]').fill(VENDOR);
-      await page.screenshot({ path: `${PROOF_DIR}/edit-${width}.png`, fullPage: false });
+      await shot(page, `edit-${width}.png`);
       await page.locator('[data-testid="restock-edit-submit"]').click();
       await editForm.waitFor({ state: "detached", timeout: 20000 });
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await reloadHydrated(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const afterEdit = Number(await qtyCell.getAttribute("data-quantity"));
       const expensesAfterEdit = await linkedExpenses(opId);
@@ -579,8 +858,7 @@ const main = async () => {
       check(expensesAfterEdit.length === 1, `width ${width}: edit produced ${expensesAfterEdit.length} rows instead of 1`);
       check(expensesAfterEdit[0].id === expenseId, `width ${width}: edit created a DIFFERENT expense row`);
       check(expensesAfterEdit[0].amount_cents === EDITED_COST_CENTS, `width ${width}: edit did not update the amount`);
-      await page.goto(`${BASE_URL}/expenses`, { waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await gotoHydrated(page, `${BASE_URL}/expenses`, "the Expenses page");
       const editedRow = page.locator(`[data-testid="expense-row-${expenseId}"]`);
       await editedRow.waitFor({ state: "visible", timeout: 30000 });
       check(
@@ -600,8 +878,7 @@ const main = async () => {
       // =====================================================================
       // 6. VOID — inventory reversed, the same expense removed
       // =====================================================================
-      await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
-      await waitForHydration(page);
+      await gotoHydrated(page, `${BASE_URL}/feed`, "the /feed page");
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       await voidRestock(page, width, "main restock");
       const afterVoid = await hayRow(hayId);
@@ -624,6 +901,10 @@ const main = async () => {
 
       await context.close();
     }
+    // Last step before this run may be called PASSED: the evidence it just
+    // printed has to be ON DISK, non-empty, and nothing from an earlier run may
+    // have been destroyed. A wiped proof directory fails the run here.
+    verifyEvidence(preExisting);
     record({ result: "PASS", widths: WIDTHS.join(",") });
     console.log(`\nE2E evidence written to ${PROOF_DIR}`);
   } finally {
@@ -676,6 +957,10 @@ main().then(
   () => process.exit(0),
   (err) => {
     console.error("\nE2E FAILED:", err instanceof Error ? `${err.name}: ${err.message}` : String(err));
+    console.error("this run's proof dir (partial evidence is kept, never deleted):", PROOF_DIR);
+    for (const path of artifacts) {
+      console.error(`  ${relative(PROOF_ROOT, path)} bytes=${existsSync(path) ? statSync(path).size : "MISSING"}`);
+    }
     console.error("evidence so far:", JSON.stringify(evidence, null, 2));
     process.exit(1);
   }
