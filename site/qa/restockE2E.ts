@@ -738,22 +738,20 @@ const main = async () => {
       // Read the envelope: find the { k, v } node whose key list contains
       // client_request_id and take the value at the same index; fall back to a
       // UUID scan of the raw body.
+      // The dev server serializes a server-fn call as { t: { p: { k: [...],
+      // v: [...] } } } — a KEY list and a PARALLEL VALUE list. The id therefore
+      // appears as a value ({\"t\":1,\"s\":\"<uuid>\"}), not as a \"key\":\"value\"
+      // pair, which is why the first version of this reader found nothing.
       const idOf = (body: string): string => {
-        const walk = (node: unknown): string => {
+        const walk = (node: any): string => {
           if (!node || typeof node !== "object") return "";
-          const obj = node as { k?: unknown; v?: unknown; s?: unknown };
-          if (Array.isArray(obj.k) && Array.isArray(obj.v)) {
-            const i = obj.k.indexOf("client_request_id");
-            const val = i >= 0 ? (obj.v as unknown[])[i] : undefined;
-            const s =
-              typeof val === "string"
-                ? val
-                : val && typeof val === "object"
-                  ? (val as { s?: unknown }).s
-                  : undefined;
-            if (typeof s === "string" && s.length > 0) return s;
+          if (Array.isArray(node.k) && Array.isArray(node.v)) {
+            const i = node.k.indexOf("client_request_id");
+            const val = i >= 0 ? node.v[i] : undefined;
+            const s = typeof val === "string" ? val : val && typeof val === "object" ? val.s : undefined;
+            if (typeof s === "string" && s) return s;
           }
-          for (const child of Object.values(obj as Record<string, unknown>)) {
+          for (const child of Object.values(node)) {
             const found = walk(child);
             if (found) return found;
           }
