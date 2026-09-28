@@ -455,7 +455,10 @@ const main = async () => {
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       await openRestock();
       await page.locator('[data-testid="restock-quantity"]').fill("10");
-      await page.locator('[data-testid="restock-cost"]').fill("99.00");
+      // Scope to the FORM: once a restock exists, the history row renders its own
+      // `data-testid="restock-cost"` value span, so an unscoped locator is
+      // ambiguous (Playwright strict mode) and would fail on a correct app.
+      await page.locator('[data-testid="restock-form"] [data-testid="restock-cost"]').fill("99.00");
       await page.locator('[data-testid="restock-vendor"]').fill("Double Tap Hay");
       const beforeDouble = baseline + QTY;
       await page.evaluate(() => {
@@ -501,7 +504,7 @@ const main = async () => {
       const expensesBeforeInventoryOnly = await allExpenses(opId);
       await openRestock();
       await page.locator('[data-testid="restock-quantity"]').fill("10");
-      const costField = page.locator('[data-testid="restock-cost"]');
+      const costField = page.locator('[data-testid="restock-form"] [data-testid="restock-cost"]');
       await costField.fill("99.00");
       await costField.fill(""); // blank cost → the explicit inventory-only choice takes over
       check(
