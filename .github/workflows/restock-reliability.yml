@@ -62,17 +62,41 @@ jobs:
       - name: Install dependencies
         working-directory: site
         run: bun install --frozen-lockfile
-      - name: Unit + integration suite (guarantees, D2/D3/D4)
-        run: bun test
-        working-directory: site
-      - name: Install Playwright (E2E only)
-        run: bun add -d playwright@1.63.0 && bunx playwright install --with-deps chromium
-        working-directory: site
+
+      # The preview-mode firewall tests need their OWN local database (they
+      # refuse a preview whose target equals production), so create it before
+      # the suite runs — exactly as site/scripts/preview-env.sh does locally and
+      # as ci.yml does. Never dropped: a re-run just fails the CREATE.
       - name: Create the preview scratch database
         run: |
           PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE ranch_preview" \
             || PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "DROP DATABASE ranch_preview" && \
                PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE ranch_preview"
+
+      # The DB-backed tests talk to the CI scratch database through DATABASE_URL
+      # in PRODUCTION mode, exactly as ci.yml runs them. APP_ENV must therefore be
+      # empty for these two steps: the job-level APP_ENV=preview (needed by the
+      # seed, the server and the E2E below) would route every query at the
+      # un-migrated preview database instead — which is precisely how this job's
+      # suite first failed.
+      - name: Migrate the CI scratch database
+        working-directory: site
+        env:
+          APP_ENV: ""
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_ci
+        run: bun run db:migrate
+
+      - name: Unit + integration suite (guarantees, D2/D3/D4)
+        working-directory: site
+        env:
+          APP_ENV: ""
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_ci
+        run: bun test
+
+      - name: Install Playwright (E2E only)
+        run: bun add -d playwright@1.63.0 && bunx playwright install --with-deps chromium
+        working-directory: site
+
       - name: Deploy-time schema gate must PASS on a migrated database
         run: bun run db:migrate && bun run db:check-schema
         working-directory: site

@@ -78,6 +78,29 @@ const check = (condition: unknown, message: string): void => {
   if (!condition) throw new E2EFailure(message);
 };
 
+/**
+ * Wait until React has HYDRATED the document.
+ *
+ * A dev-server page is served and painted well before its client JS runs. A tap
+ * in that window is handled by the BROWSER, not the app: the form does a native
+ * GET submit and the app's own onSubmit never fires, which looks exactly like a
+ * failed sign-in ("/login?" with no error and no server-function call). A real
+ * user taps a page that is already interactive, so the E2E must wait for the
+ * same state instead of racing the bundle.
+ */
+const waitForHydration = async (page: AnyPage): Promise<void> => {
+  await page
+    .waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll("body *")).some((el) =>
+          Object.keys(el).some((k) => k.startsWith("__reactFiber$"))
+        ),
+      null,
+      { timeout: 30000 }
+    )
+    .catch(() => undefined);
+};
+
 /** Read the preview env file if the URL was not exported (silent; nothing printed). */
 const envFromFile = (key: string): string | undefined => {
   if (process.env[key]) return process.env[key];
@@ -202,6 +225,7 @@ const main = async () => {
 
       // ---- sign in (real login form) -------------------------------------
       await page.goto(`${BASE_URL}/login`, { waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       await page.fill("#login-email", creds.email);
       await page.fill("#login-password", creds.password);
       await Promise.all([
@@ -211,6 +235,7 @@ const main = async () => {
 
       // ---- /feed: the fixture stack and its Restock button ---------------
       await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       const qtyCell = page.locator(`[data-testid="hay-qty-${hayId}"]`);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const baseline = Number(await qtyCell.getAttribute("data-quantity"));
@@ -289,6 +314,7 @@ const main = async () => {
       check(createJson.expense_created === true, `width ${width}: the save did not create the linked expense`);
 
       await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const afterCreate = Number(await qtyCell.getAttribute("data-quantity"));
       const afterCreateDb = await hayRow(hayId);
@@ -310,6 +336,7 @@ const main = async () => {
 
       // ---- Expenses shows it immediately, and after a refresh -------------
       await page.goto(`${BASE_URL}/expenses`, { waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       const linkedRow = page.locator(`[data-testid="expense-row-${expenseId}"]`);
       await linkedRow.waitFor({ state: "visible", timeout: 30000 });
       check(
@@ -324,6 +351,7 @@ const main = async () => {
       const visibleLinkedRows = await page.locator('[data-testid^="expense-row-"][data-linked="true"]').count();
       check(visibleLinkedRows === 1, `width ${width}: expected exactly 1 linked ledger row, saw ${visibleLinkedRows}`);
       await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       await linkedRow.waitFor({ state: "visible", timeout: 30000 });
       check(
         (await linkedRow.locator('[data-testid="expense-amount"]').getAttribute("data-amount-cents")) === String(COST_CENTS),
@@ -346,6 +374,7 @@ const main = async () => {
       // 3. FAST DOUBLE-SUBMIT — no duplicate expense, stock added once
       // =====================================================================
       await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       await openRestock();
       await page.locator('[data-testid="restock-quantity"]').fill("10");
@@ -360,6 +389,7 @@ const main = async () => {
       });
       await page.locator('[data-testid="restock-form"]').waitFor({ state: "detached", timeout: 20000 });
       await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const afterDouble = Number(await qtyCell.getAttribute("data-quantity"));
       const dbAfterDouble = await hayRow(hayId);
@@ -389,6 +419,7 @@ const main = async () => {
       // 4. INVENTORY ONLY — no expense of any kind
       // =====================================================================
       await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const expensesBeforeInventoryOnly = await allExpenses(opId);
       await openRestock();
@@ -408,6 +439,7 @@ const main = async () => {
       await submit.click();
       await page.locator('[data-testid="restock-form"]').waitFor({ state: "detached", timeout: 20000 });
       await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const afterInventoryOnly = Number(await qtyCell.getAttribute("data-quantity"));
       const expensesAfterInventoryOnly = await allExpenses(opId);
@@ -430,6 +462,7 @@ const main = async () => {
       // 5. EDIT — the SAME expense row is updated
       // =====================================================================
       await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       await page.locator('[data-testid^="restock-row-"]').first().getByRole("button", { name: "Edit" }).click();
       const editForm = page.locator('[data-testid="restock-edit-form"]');
@@ -441,6 +474,7 @@ const main = async () => {
       await page.locator('[data-testid="restock-edit-submit"]').click();
       await editForm.waitFor({ state: "detached", timeout: 20000 });
       await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const afterEdit = Number(await qtyCell.getAttribute("data-quantity"));
       const expensesAfterEdit = await linkedExpenses(opId);
@@ -449,6 +483,7 @@ const main = async () => {
       check(expensesAfterEdit[0].id === expenseId, `width ${width}: edit created a DIFFERENT expense row`);
       check(expensesAfterEdit[0].amount_cents === EDITED_COST_CENTS, `width ${width}: edit did not update the amount`);
       await page.goto(`${BASE_URL}/expenses`, { waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       const editedRow = page.locator(`[data-testid="expense-row-${expenseId}"]`);
       await editedRow.waitFor({ state: "visible", timeout: 30000 });
       check(
@@ -469,6 +504,7 @@ const main = async () => {
       // 6. VOID — inventory reversed, the same expense removed
       // =====================================================================
       await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
+      await waitForHydration(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       await voidRestock(page);
       const afterVoid = await hayRow(hayId);
