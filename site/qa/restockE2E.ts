@@ -248,10 +248,17 @@ const main = async () => {
 
       // =====================================================================
       // 1. THE FORM CONTRACT
+      //
+      // EVERY form-field locator below is scoped to '[data-testid="restock-form"]'.
+      // Once one restock exists, the history row on the same page renders its own
+      // `restock-cost` / `restock-vendor` / … value spans, so an unscoped
+      // `[data-testid="restock-cost"]` resolves to TWO elements and Playwright's
+      // strict mode fails the run on a perfectly correct app. Scoping keeps the
+      // assertion pointed at the control the user is typing into.
       // =====================================================================
       await openRestock();
       const formText = (await page.locator('[data-testid="restock-form"]').innerText()).replace(/\s+/g, " ");
-      const helper = page.locator('[data-testid="restock-cost-helper"]');
+      const helper = page.locator('[data-testid="restock-form"] [data-testid="restock-cost-helper"]');
       check(
         (await helper.innerText()).trim() === "Saving this restock will add this amount to Expenses.",
         `width ${width}: cost helper text is not the required sentence`
@@ -313,25 +320,25 @@ const main = async () => {
         `width ${width}: "Inventory only — no expense" choice is not visible`
       );
       // unit is a REAL control, matching the stack's own unit
-      const unitControl = page.locator('[data-testid="restock-unit"]');
+      const unitControl = page.locator('[data-testid="restock-form"] [data-testid="restock-unit"]');
       check((await unitControl.evaluate((el: any) => el.tagName)) === "SELECT", `width ${width}: the unit is not a real control`);
       check((await unitControl.inputValue()) === "bales", `width ${width}: the unit control does not show "bales"`);
       // blank cost → inventory-only label (no $0 expense can be created silently)
-      const submit = page.locator('[data-testid="restock-submit"]');
+      const submit = page.locator('[data-testid="restock-form"] [data-testid="restock-submit"]');
       check(
         (await submit.innerText()).trim() === "Save restock (inventory only)",
         `width ${width}: submit label with a blank cost is not the inventory-only label`
       );
 
       // ---- fill the owner's numbers --------------------------------------
-      await page.locator('[data-testid="restock-quantity"]').fill(String(QTY));
-      await page.locator('[data-testid="restock-vendor"]').fill(VENDOR);
-      const dateInput = page.locator('[data-testid="restock-date"]');
+      await page.locator('[data-testid="restock-form"] [data-testid="restock-quantity"]').fill(String(QTY));
+      await page.locator('[data-testid="restock-form"] [data-testid="restock-vendor"]').fill(VENDOR);
+      const dateInput = page.locator('[data-testid="restock-form"] [data-testid="restock-date"]');
       await dateInput.fill(today());
-      await page.locator('[data-testid="restock-cost"]').fill(COST.toFixed(2));
-      await page.locator('[data-testid="restock-notes"]').fill(`${QTY} bales — ${VENDOR}`);
+      await page.locator('[data-testid="restock-form"] [data-testid="restock-cost"]').fill(COST.toFixed(2));
+      await page.locator('[data-testid="restock-form"] [data-testid="restock-notes"]').fill(`${QTY} bales — ${VENDOR}`);
       const addExpenseOn = await page
-        .locator('[data-testid="restock-add-expense"]')
+        .locator('[data-testid="restock-form"] [data-testid="restock-add-expense"]')
         .getAttribute("aria-pressed");
       check(addExpenseOn === "true", `width ${width}: "Add linked expense" is not ON by default when a cost is entered`);
       check(
@@ -454,12 +461,12 @@ const main = async () => {
       await waitForHydration(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       await openRestock();
-      await page.locator('[data-testid="restock-quantity"]').fill("10");
+      await page.locator('[data-testid="restock-form"] [data-testid="restock-quantity"]').fill("10");
       // Scope to the FORM: once a restock exists, the history row renders its own
       // `data-testid="restock-cost"` value span, so an unscoped locator is
       // ambiguous (Playwright strict mode) and would fail on a correct app.
       await page.locator('[data-testid="restock-form"] [data-testid="restock-cost"]').fill("99.00");
-      await page.locator('[data-testid="restock-vendor"]').fill("Double Tap Hay");
+      await page.locator('[data-testid="restock-form"] [data-testid="restock-vendor"]').fill("Double Tap Hay");
       const beforeDouble = baseline + QTY;
       await page.evaluate(() => {
         const form = document.querySelector('[data-testid="restock-form"]') as HTMLFormElement | null;
@@ -503,12 +510,12 @@ const main = async () => {
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
       const expensesBeforeInventoryOnly = await allExpenses(opId);
       await openRestock();
-      await page.locator('[data-testid="restock-quantity"]').fill("10");
+      await page.locator('[data-testid="restock-form"] [data-testid="restock-quantity"]').fill("10");
       const costField = page.locator('[data-testid="restock-form"] [data-testid="restock-cost"]');
       await costField.fill("99.00");
       await costField.fill(""); // blank cost → the explicit inventory-only choice takes over
       check(
-        (await page.locator('[data-testid="restock-inventory-only"]').getAttribute("aria-pressed")) === "true",
+        (await page.locator('[data-testid="restock-form"] [data-testid="restock-inventory-only"]').getAttribute("aria-pressed")) === "true",
         `width ${width}: a blank cost did not select "Inventory only — no expense"`
       );
       check(
