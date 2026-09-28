@@ -213,6 +213,10 @@ const main = async () => {
           "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
       });
       const page = await context.newPage();
+      // A dev-server module compiles on first use. Playwright's 30s default is
+      // tight for a cold build, so give every action 45s and let the few waits
+      // that need longer say so explicitly.
+      page.setDefaultTimeout(45000);
       const serverFnCalls: { body: string; status: number; text: string }[] = [];
       page.on("response", async (res: any) => {
         if (!res.url().includes("/_serverFn/")) return;
@@ -504,7 +508,7 @@ const main = async () => {
         expensesForThatRestock: doubleTapExpenses.length,
       });
       // clean up the double-submit restock through the UI (void)
-      await voidRestock(page);
+      await voidRestock(page, width, "double-submit");
       const afterVoidDouble = await hayRow(hayId);
       check(afterVoidDouble.quantity === beforeDouble, `width ${width}: voiding the double-submit restock did not restore the count`);
 
@@ -548,7 +552,7 @@ const main = async () => {
         expensesAfter: expensesAfterInventoryOnly,
         quantityAfter: afterInventoryOnly,
       });
-      await voidRestock(page);
+      await voidRestock(page, width, "inventory-only");
       check((await hayRow(hayId)).quantity === beforeDouble, `width ${width}: inventory-only void did not restore the count`);
 
       // =====================================================================
@@ -599,7 +603,7 @@ const main = async () => {
       await page.goto(`${BASE_URL}/feed`, { waitUntil: "domcontentloaded" });
       await waitForHydration(page);
       await qtyCell.waitFor({ state: "visible", timeout: 30000 });
-      await voidRestock(page);
+      await voidRestock(page, width, "main restock");
       const afterVoid = await hayRow(hayId);
       const restocksAfterVoid = await restockCount(opId);
       const expensesAfterVoid = await linkedExpenses(opId);
@@ -628,13 +632,44 @@ const main = async () => {
   }
 };
 
-/** Click Void on the newest restock row and confirm. */
-const voidRestock = async (page: AnyPage) => {
+/**
+ * Click Void on the newest restock row, confirm, and wait for the modal to close.
+ *
+ * The wait is 60s, not 20s: the confirm button shows "Voiding…" while the request
+ * is in flight, and on a dev server the server-function module compiles on first
+ * use. A 20s budget once failed a void that was NOT broken — the transaction
+ * committed a few seconds later and the inventory was reversed (the row and its
+ * expense were gone and the stack was back to its pre-restock count). On failure
+ * the modal's own text is captured, so a real refusal is never mistaken for a
+ * slow one.
+ */
+const voidRestock = async (page: AnyPage, width: number, label: string): Promise<number> => {
   const row = page.locator('[data-testid^="restock-row-"]').first();
   check((await row.count()) > 0, "expected a restock row to void");
   await row.getByRole("button", { name: "Void" }).click();
-  await page.locator('[data-testid="restock-void-confirm"]').click();
-  await page.locator('[data-testid="restock-void-confirm"]').waitFor({ state: "detached", timeout: 20000 });
+  const confirm = page.locator('[data-testid="restock-void-confirm"]');
+  await confirm.waitFor({ state: "visible", timeout: 30000 });
+  const started = Date.now();
+  await confirm.click();
+  try {
+    await confirm.waitFor({ state: "detached", timeout: 60000 });
+  } catch (err) {
+    const modalText = await page
+      .locator('[data-testid="restock-void-confirm"]')
+      .evaluate((el: any) => {
+        const box = el.closest("div")?.parentElement;
+        return String((box ?? el).innerText ?? "");
+      })
+      .catch(() => "");
+    throw new E2EFailure(
+      `width ${width}: the void modal (${label}) never closed after ${Date.now() - started}ms — ` +
+        `${err instanceof Error ? err.message : String(err)}. Modal said: ` +
+        `"${String(modalText).replace(/\s+/g, " ").trim().slice(0, 300)}"`
+    );
+  }
+  const ms = Date.now() - started;
+  record({ width, step: "void-response", voided: label, ms });
+  return ms;
 };
 
 main().then(
