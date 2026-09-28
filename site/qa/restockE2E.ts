@@ -34,7 +34,7 @@
  * is never printed.
  * ============================================================================
  */
-import { readFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import postgres from "postgres";
 // NOTE: Playwright is deliberately NOT a dependency of this app. The CI job
 // installs it (`bun add -d playwright@1.63.0` + `playwright install chromium`)
@@ -342,15 +342,53 @@ const main = async () => {
 
       // =====================================================================
       // 2. SAVE — 25 bales + exactly one linked expense
+      //
+      // HOW THE SAVE IS JUDGED (and why the old assertion was wrong): the dev
+      // server answers a TanStack Start server-function call with the framework's
+      // own serialized envelope (`{"t":10,"i":0,"p":{…}}`), NOT with the function's
+      // return value — so `JSON.parse(text).ok` is `undefined` by design and a
+      // check on it fails a save that actually worked. The raw body is still
+      // EVIDENCE, so it is written to disk verbatim and the HTTP status is
+      // asserted; the OUTCOME is then judged where the owner judges it — the
+      // app's own success banner on /feed — and against the database below.
       // =====================================================================
       serverFnCalls.length = 0;
       await submit.click();
+      // The modal only unmounts because onSaved() ran, and FeedModals calls
+      // onSaved() only when res.ok — a failed save leaves the form open.
       await page.locator('[data-testid="restock-form"]').waitFor({ state: "detached", timeout: 20000 });
-      const createCall = serverFnCalls.find((c) => c.body.includes("client_request_id"));
+      const createCall = await (async () => {
+        // The Playwright `response` listener is async (it awaits the body), so the
+        // entry can land a beat after the modal has already closed.
+        for (let i = 0; i < 100; i++) {
+          const found = serverFnCalls.find((c) => c.body.includes("client_request_id"));
+          if (found) return found;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        return undefined;
+      })();
       check(createCall, `width ${width}: no restock request was observed`);
-      const createJson = JSON.parse(createCall!.text) as { ok: boolean; expense_created: boolean; duplicate: boolean };
-      check(createJson.ok === true, `width ${width}: the save returned an error: ${createCall!.text.slice(0, 200)}`);
-      check(createJson.expense_created === true, `width ${width}: the save did not create the linked expense`);
+      writeFileSync(`${PROOF_DIR}/server-fn-${width}.json`, createCall!.text);
+      check(
+        createCall!.status === 200,
+        `width ${width}: the restock request answered HTTP ${createCall!.status} (raw body in server-fn-${width}.json)`
+      );
+      check(createCall!.text.trim().length > 0, `width ${width}: the restock response body was empty`);
+      const banner = page.locator('[data-testid="restock-message"]');
+      await banner.waitFor({ state: "visible", timeout: 15000 });
+      const bannerText = (await banner.innerText()).replace(/\s+/g, " ").trim();
+      check(
+        bannerText.includes("Inventory updated and expense recorded."),
+        `width ${width}: the app did not report a restock WITH a linked expense — banner said "${bannerText}"`
+      );
+      record({
+        width,
+        step: "save-response",
+        httpStatus: createCall!.status,
+        rawBodyBytes: createCall!.text.length,
+        rawBodyFile: `server-fn-${width}.json`,
+        banner: bannerText,
+      });
 
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForHydration(page);

@@ -581,7 +581,11 @@ function FeedPage() {
         />
       )}
       {restockMessage && (
-        <div className="fixed inset-x-3 bottom-20 z-[70] sm:left-auto sm:right-6 sm:w-96">
+        <div
+          className="fixed inset-x-3 bottom-20 z-[70] sm:left-auto sm:right-6 sm:w-96"
+          data-testid="restock-message"
+          role="status"
+        >
           <div className="rounded-xl border border-green-200 bg-white px-4 py-3 text-sm font-semibold text-green-900 shadow-xl">
             <span className="mr-1.5">✅</span>
             {restockMessage}
