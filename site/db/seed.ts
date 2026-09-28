@@ -183,7 +183,7 @@ export async function seedPreviewFixture(
   if (equipment.length === 0) {
     await db`
       INSERT INTO equipment (name, category, make, model, year, condition, status, location, fuel_type, notes, operation_id)
-      VALUES (${PREVIEW_EQUIPMENT_NAME}, 'vehicle', 'Sandbox', 'Fake 1500', 2011, 'good', 'active',
+      VALUES (${PREVIEW_EQUIPMENT_NAME}, 'truck', 'Sandbox', 'Fake 1500', 2011, 'good', 'in-service',
               'PREVIEW — Sandbox shop (fake)', 'gas', 'Fake preview asset — no real registration or insurance.', ${operationId})`;
   }
 
