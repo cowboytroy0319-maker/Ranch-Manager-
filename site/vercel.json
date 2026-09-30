@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "bun run build && bun vercel-build.mjs",
+  "outputDirectory": "dist/client",
+  "installCommand": "bun install --frozen-lockfile",
+  "rewrites": [
+    { "source": "/webhook", "destination": "/api/render" },
+    { "source": "/templates/:slug.csv", "destination": "/api/render" },
+    { "source": "/api/:path*", "destination": "/404" },
+    { "source": "/:path*", "destination": "/api/render" }
+  ]
+}

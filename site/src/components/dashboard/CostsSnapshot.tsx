@@ -3,32 +3,35 @@ import { Link } from "@tanstack/react-router";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import type { CostData } from "~/server/costs";
 import type { ExpenseData, ExpenseCategory } from "~/types/expenses";
-import { CATEGORY_LABEL } from "~/types/expenses";
-const fmt = (cents: number) => `$${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+import { categoryDisplayRows, categoryTotals } from "~/types/expenses";
+const fmt = (cents: number) => `${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const COLORS = ["#5a7d3a", "#8a5a2b", "#7b8fa3", "#b98a3a", "#4a6b8a", "#8a4a4a", "#5a8a78", "#6b5a8a"];
 type Dim = "category" | "herd" | "pasture" | "equipment" | "job";
+type DimRow = { key: string; name: string; amount_cents: number; entries: number };
 export function CostsSnapshot({ data, expenses }: { data: CostData; expenses: ExpenseData }) {
   const [dim, setDim] = useState<Dim>("herd");
   const fuel = data.fuel;
   const maxFuel = Math.max(1, ...(fuel?.byEquipment.map((r) => r.cost_cents) ?? []));
-  // Per-category lookup for the four headline stats.
-  const catMap = new Map(expenses.byCategory.map((c) => [c.category, c.amount_cents] as const));
-  const cat = (c: ExpenseCategory) => catMap.get(c) ?? 0;
+  // Per-category totals for the four headline stats. `categoryTotals` also
+  // counts a legacy spelling of the same category (feed → Hay & feed), so the
+  // headline is never $0.00 against a non-zero total.
+  const cat = (c: ExpenseCategory) => categoryTotals(expenses.byCategory, c).amount_cents;
   const sub = (c: ExpenseCategory) => {
-    const e = expenses.byCategory.find((x) => x.category === c);
-    return e ? `${e.entries} entries` : "no entries";
+    const { entries } = categoryTotals(expenses.byCategory, c);
+    return entries > 0 ? `${entries} entries` : "no entries";
   };
   const hasExpenses = expenses.totalEntries > 0;
-  const dimRows =
+  const dimRows: DimRow[] =
     dim === "category"
-      ? expenses.byCategory.map((c) => ({ name: CATEGORY_LABEL[c.category], amount_cents: c.amount_cents, entries: c.entries }))
-      : dim === "herd"
-        ? expenses.byHerd
-        : dim === "pasture"
-          ? expenses.byPasture
-          : dim === "equipment"
-            ? expenses.byEquipment
-            : expenses.byJob;
+      ? categoryDisplayRows(expenses.byCategory)
+      : (dim === "herd"
+          ? expenses.byHerd
+          : dim === "pasture"
+            ? expenses.byPasture
+            : dim === "equipment"
+              ? expenses.byEquipment
+              : expenses.byJob
+        ).map((r, i) => ({ key: `${dim}:${i}:${r.name}`, name: r.name, amount_cents: r.amount_cents, entries: r.entries }));
   const maxDim = Math.max(1, ...dimRows.map((r) => r.amount_cents));
   const monthLabel = expenses.month || fuel?.month || "this month";
   return (
@@ -85,7 +88,7 @@ export function CostsSnapshot({ data, expenses }: { data: CostData; expenses: Ex
               </div>
               <ul className="divide-y divide-stone-100">
                 {dimRows.map((r, i) => (
-                  <li key={r.name} className="flex items-center gap-3 py-2.5">
+                  <li key={r.key} className="flex items-center gap-3 py-2.5">
                     <div className="w-40 shrink-0 truncate" title={r.name}>
                       <Badge tone="green">{r.name}</Badge>
                     </div>
