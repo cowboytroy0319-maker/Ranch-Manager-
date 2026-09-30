@@ -16,7 +16,11 @@ import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import { expenseLinkSelectColumns, loadExpenseLinkColumns } from "~/expenseSchema";
 import type { DimensionTotal, ExpenseData, ExpenseFilter, ExpenseRow } from "~/types/expenses";
-import { EXPENSE_CATEGORIES, type ExpenseCategory } from "~/types/expenses";
+import {
+  EXPENSE_CATEGORIES,
+  canonicalExpenseCategory,
+  type ExpenseCategory,
+} from "~/types/expenses";
 
 // Default scope: the month the DB clock says it currently is, so the dashboard
 // always shows this month. Optional {from, to} bounds (YYYY-MM-DD) + category
@@ -268,8 +272,12 @@ export function parseExpenseInput(raw: unknown): ExpenseInput {
     throw new Error("Expense amount must be greater than zero.");
   }
   // Reject missing/invalid category instead of silently defaulting (a stray
-  // value must never reach the DB CHECK constraint).
-  const category = oneOf0(d.category, EXPENSE_CATEGORIES);
+  // value must never reach the DB CHECK constraint). A LEGACY value (the six
+  // pre-0018 spellings: feed, vet_health, maintenance, insurance, fuel, other)
+  // is not a stray value — it is what a row edited before 0018 was applied still
+  // holds. It is canonicalized to the value the migration writes, so opening and
+  // saving such an expense works and never lands a legacy value in the table.
+  const category = oneOf0(d.category, EXPENSE_CATEGORIES) ?? canonicalExpenseCategory(d.category);
   if (!category) throw new Error("Pick a category for this expense.");
   const vendor = str0(d.vendor);
   if (!vendor) throw new Error("Payee / description is required.");

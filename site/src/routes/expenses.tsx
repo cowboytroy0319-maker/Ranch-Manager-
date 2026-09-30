@@ -4,11 +4,11 @@ import { Link } from "@tanstack/react-router";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { deleteExpense, getExpensesData } from "~/server/expenses";
 import { getQuickAddRefs } from "~/server/refs";
-import { CATEGORY_LABEL, type ExpenseCategory } from "~/types/expenses";
+import { categoryLabel, categoryTotals, EXPENSE_CATEGORY_OPTIONS, type ExpenseCategory } from "~/types/expenses";
 import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
 import { ExpenseFormModal } from "~/components/expenses/ExpenseForm";
-import { EXPENSE_CATEGORIES } from "~/types/expenses";
+import { categoryDisplayRows } from "~/types/expenses";
 import {
   EXPENSE_ADD_INTENTS,
   MANUAL_SOURCE_LABEL,
@@ -111,9 +111,12 @@ function ExpensesPage() {
     }
   };
 
-  // Lookup map for per-category totals (also used by the top stats).
-  const catMap = new Map(data.byCategory.map((c) => [c.category, c] as const));
-  const cat = (c: ExpenseCategory) => catMap.get(c);
+  // Per-category totals for the headline stats. `categoryTotals` counts a
+  // legacy spelling (feed / vet_health / maintenance) together with its
+  // canonical equivalent, so these figures are right even on a database that
+  // still holds legacy values — previously they read $0.00 against a non-zero
+  // grand total, which looked like the feature was still broken.
+  const catTotals = (c: ExpenseCategory) => categoryTotals(data.byCategory, c);
   if (!data.configured) {
     return (
       <Shell>
@@ -136,16 +139,17 @@ function ExpensesPage() {
     ? [search.from ?? "any start", search.to ?? "any end"].join(" → ")
     : data.month || "this month";
 
-  const dimRows =
-    dim === "herd"
-      ? data.byHerd
-      : dim === "pasture"
-        ? data.byPasture
-        : dim === "equipment"
-          ? data.byEquipment
-          : dim === "job"
-            ? data.byJob
-            : (data.byCategory.map((c) => ({ name: CATEGORY_LABEL[c.category], amount_cents: c.amount_cents, entries: c.entries })) as { name: string; amount_cents: number; entries: number }[]);
+  const dimRows: { key: string; name: string; amount_cents: number; entries: number }[] =
+    dim === "category"
+      ? categoryDisplayRows(data.byCategory)
+      : (dim === "herd"
+          ? data.byHerd
+          : dim === "pasture"
+            ? data.byPasture
+            : dim === "equipment"
+              ? data.byEquipment
+              : data.byJob
+        ).map((r, i) => ({ key: `${dim}:${i}:${r.name}`, name: r.name, amount_cents: r.amount_cents, entries: r.entries }));
   const maxCost = Math.max(1, ...dimRows.map((r) => r.amount_cents));
   const hasRows = data.rows.length > 0;
 
@@ -159,9 +163,9 @@ function ExpensesPage() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <Stat label={filtersActive ? "Filtered total" : "This month"} value={hasRows || filtersActive ? fmt(data.totalCents) : "—"} sub={rangeLabel} accent />
         <Stat label="Entries" value={String(data.totalEntries)} sub="expense lines" />
-        <Stat label="Feed & Hay" value={cat("hay_feed") ? fmt(cat("hay_feed")!.amount_cents) : "—"} sub={`${cat("hay_feed")?.entries ?? 0} entries`} />
-        <Stat label="Vet & Health" value={cat("veterinary") ? fmt(cat("veterinary")!.amount_cents) : "—"} sub={`${cat("veterinary")?.entries ?? 0} entries`} />
-        <Stat label="Repairs & Maint." value={cat("repairs_maintenance") ? fmt(cat("repairs_maintenance")!.amount_cents) : "—"} sub={`${cat("repairs_maintenance")?.entries ?? 0} entries`} />
+        <Stat label="Feed & Hay" value={catTotals("hay_feed").amount_cents ? fmt(catTotals("hay_feed").amount_cents) : "—"} sub={`${catTotals("hay_feed").entries} entries`} />
+        <Stat label="Vet & Health" value={catTotals("veterinary").amount_cents ? fmt(catTotals("veterinary").amount_cents) : "—"} sub={`${catTotals("veterinary").entries} entries`} />
+        <Stat label="Repairs & Maint." value={catTotals("repairs_maintenance").amount_cents ? fmt(catTotals("repairs_maintenance").amount_cents) : "—"} sub={`${catTotals("repairs_maintenance").entries} entries`} />
       </div>
 
       <div className="grid gap-5 lg:grid-cols-5">
@@ -206,8 +210,8 @@ function ExpensesPage() {
                 onChange={(e) => setFilter({ category: e.target.value || undefined })}
               >
                 <option value="">All categories</option>
-                {EXPENSE_CATEGORIES.map((c) => (
-                  <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>
+                {EXPENSE_CATEGORY_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
               </select>
             </label>
@@ -228,7 +232,7 @@ function ExpensesPage() {
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-xs font-semibold text-stone-500">{r.expense_date}</span>
-                          <Badge tone={catTone(r.category)}>{CATEGORY_LABEL[r.category]}</Badge>
+                          <Badge tone={catTone(r.category)}>{categoryLabel(r.category)}</Badge>
                           <span className="text-lg font-bold text-stone-900" data-testid="expense-amount" data-amount-cents={r.amount_cents}>
                             {fmt(r.amount_cents)}
                           </span>
@@ -310,7 +314,7 @@ function ExpensesPage() {
           </div>
           <ul className="divide-y divide-stone-100">
             {dimRows.map((r, i) => (
-              <li key={r.name} className="py-2.5">
+              <li key={r.key} className="py-2.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="min-w-0 truncate text-sm font-semibold text-stone-800" title={r.name}>{r.name}</span>
                   <span className="shrink-0 text-sm font-bold text-stone-900">{fmt(r.amount_cents)}</span>
@@ -357,7 +361,7 @@ function ExpensesPage() {
       {deleting ? (
         <Modal
           title="Delete expense?"
-          sub={`${deleting.expense_date} · ${CATEGORY_LABEL[deleting.category]} · ${fmt(deleting.amount_cents)}`}
+          sub={`${deleting.expense_date} · ${categoryLabel(deleting.category)} · ${fmt(deleting.amount_cents)}`}
           onClose={() => { setDeleting(null); setDeleteError(null); }}
           footer={
             <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">

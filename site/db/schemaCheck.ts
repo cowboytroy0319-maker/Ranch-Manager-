@@ -18,7 +18,13 @@
  *      applied fails the release — this alone would have caught 0018.
  *   2. Every object this build actually queries (the manifest below) exists.
  *      This catches a hand-edited/drifted database where the bookkeeping says
- *      "applied" but the objects are gone.
+ *      "applied" but the objects are gone. "Objects" includes named CONSTRAINTS
+ *      (`uq_restock_log_operation_request`,
+ *      `uq_pasture_activities_operation_request`): the two UNIQUEs that back the
+ *      restock double-submit guarantee. Before those were listed, dropping both
+ *      of them left the gate reporting OK/exit 0 — proved on a real database by
+ *      the independent verifier, and encoded as a test in
+ *      `db/schemaCheck.test.ts`.
  *
  * SAFETY
  *   * READ-ONLY: SELECT + catalogue lookups only. No DDL, no writes, no
@@ -43,8 +49,8 @@ export const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "mig
 /** One object this build relies on, and the migration that creates it. */
 export type RequiredObject = {
   migration: string;
-  kind: "table" | "column" | "index";
-  /** Table name for a column (ignored for tables/indexes). */
+  kind: "table" | "column" | "index" | "constraint";
+  /** Table name for a column (ignored for tables/indexes/constraints). */
   table?: string;
   name: string;
 };
@@ -67,6 +73,16 @@ export const REQUIRED_OBJECTS: RequiredObject[] = [
   { migration: "0018_product_blocker.sql", kind: "column", table: "expenses", name: "source_type" },
   { migration: "0018_product_blocker.sql", kind: "column", table: "expenses", name: "source_id" },
   { migration: "0018_product_blocker.sql", kind: "index", name: "expenses_source_once_uniq" },
+  // 0018 — the two NAMED UNIQUE constraints that back the double-submit
+  // guarantee on restock and pasture activity. Independently verified gap: with
+  // BOTH dropped the gate used to print "OK … 10 required objects present",
+  // exit 0, even though the database-level dedupe guarantee was gone.
+  { migration: "0018_product_blocker.sql", kind: "constraint", name: "uq_restock_log_operation_request" },
+  {
+    migration: "0018_product_blocker.sql",
+    kind: "constraint",
+    name: "uq_pasture_activities_operation_request",
+  },
   // 0019 — permanent complimentary owner access / entitlements.
   { migration: "0019_owner_complimentary_access.sql", kind: "table", name: "operation_entitlements" },
   // 0020 — password reset.
@@ -151,10 +167,16 @@ export async function readTargetSchema(db: ReturnType<typeof rawSql>): Promise<{
     SELECT c.relname AS name FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relkind = 'i' AND n.nspname = ANY(current_schemas(false))`;
+  const constraints = await db<{ name: string }[]>`
+    SELECT con.conname AS name FROM pg_constraint con
+    JOIN pg_class c ON c.oid = con.conrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = ANY(current_schemas(false))`;
   const present = new Set<string>();
   for (const t of tables) present.add(`table:${t.name}`);
   for (const c of columns) present.add(`column:${c.key}`);
   for (const i of indexes) present.add(`index:${i.name}`);
+  for (const c of constraints) present.add(`constraint:${c.name}`);
   return { appliedMigrations, presentObjects: [...present] };
 }
 

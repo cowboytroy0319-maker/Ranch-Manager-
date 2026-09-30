@@ -13,6 +13,7 @@
     "db:seed": "bun db/seed.ts",
     "db:seed:demo": "bun db/seedDemo.ts",
     "db:check-schema": "bun db/schemaCheck.ts",
+    "db:preflight-0018": "bun db/preflight0018.ts",
     "e2e:restock": "bun qa/restockE2E.ts",
     "format": "prettier --write ."
   },
