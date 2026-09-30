@@ -56,6 +56,20 @@ const TARGET = "0018_product_blocker.sql";
 const LEGACY_DB = "ranch_legacy_0018";
 const PROBE_DB = "ranch_legacy_0018_probe";
 
+// ---------------------------------------------------------------------------
+// HARNESS TIMING — bun's default hook timeout is 5s, and these hooks run DDL.
+// ---------------------------------------------------------------------------
+// `beforeAll` below creates TWO databases and applies all 17 pre-0018 migrations
+// to each (plus the production-shaped seed rows); teardown closes two pools.
+// `CREATE DATABASE` forces a cluster-wide checkpoint, so on a shared CI runner
+// this is several times slower than on a laptop. The sibling suite
+// `db/preflight0018.test.ts` went red on exactly this (run 36665807249, head
+// 4682987: every assertion green, `afterAll` timed out at 5000.11ms), so the
+// hooks here carry the same explicit headroom and the pool shutdowns are
+// bounded — a hang in `end()` is the same 5s failure by another route.
+const HOOK_TIMEOUT_MS = 120_000;
+const END_TIMEOUT_S = 5;
+
 /** The six values 0007_expenses.sql allowed, and the twelve 0018 allows. */
 const LEGACY_CATEGORIES = ["feed", "vet_health", "maintenance", "insurance", "fuel", "other"] as const;
 const NEW_CATEGORIES = [
@@ -287,16 +301,16 @@ beforeAll(async () => {
   beforeFingerprint = await schemaFingerprint(db);
   statementCount = await applyFileLikeTheRunner(db, TARGET);
   afterFingerprint = await schemaFingerprint(db);
-});
+}, HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
   try {
-    await db.end();
+    await db.end({ timeout: END_TIMEOUT_S });
   } catch {
     /* best effort */
   }
-  await admin.end();
-});
+  await admin.end({ timeout: END_TIMEOUT_S });
+}, HOOK_TIMEOUT_MS);
 
 // ---------------------------------------------------------------------------
 // 1. The root cause, reproduced permanently

@@ -54,6 +54,34 @@ type Sql = postgres.Sql;
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "migrations");
 const BASE = "ranch_pf_true";
 
+// ---------------------------------------------------------------------------
+// HARNESS TIMING — why every hook below carries an explicit timeout
+// ---------------------------------------------------------------------------
+// The hooks here run real DDL: a template database is built once per FILE in
+// `beforeAll`, each fault test clones it, and `afterAll` drops every clone.
+// `CREATE DATABASE`/`DROP DATABASE` each force a cluster-wide checkpoint, so this
+// teardown is measured in hundreds of milliseconds here and in seconds on a
+// shared CI runner — and bun's DEFAULT per-hook timeout is 5s, which is a hard
+// failure of the whole file.
+//
+// That is exactly what happened on 2026-09-30 (head 4682987, run 36665807249):
+// every product assertion in this file passed (the last one at 03:45:47.49) and
+// the run still went red because `afterAll` hit 5.0s while dropping the clones:
+//   (fail) (unnamed) [5000.11ms]
+//     ^ a beforeEach/afterEach hook timed out for this test.
+// Reproduced locally with a 6s hook: identical message at 5001ms without an
+// explicit timeout, green with one. So the timeouts below are not cosmetic.
+//
+// The teardown is also cheaper and cannot hang: the clones are dropped in
+// PARALLEL, every drop is best-effort (a failed drop is reported and the file
+// still passes — the next run's `clone()` drops the name anyway), and both
+// `end()` calls are bounded.
+const HOOK_TIMEOUT_MS = 120_000;
+const END_TIMEOUT_S = 5;
+// One test waits out a deliberately-held transaction (`pg_sleep(3)`, measured at
+// 3914ms on the CI runner): under the default 5s that is already a flake.
+const LOCK_TEST_TIMEOUT_MS = 30_000;
+
 const withDb = (dbName: string): string => {
   const parsed = new URL(url);
   parsed.pathname = `/${dbName}`;
@@ -132,17 +160,31 @@ beforeAll(async () => {
       mode: "production",
     });
   } finally {
-    await db.end();
+    await db.end({ timeout: END_TIMEOUT_S });
   }
-});
+}, HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
-  for (const name of await admin<{ datname: string }[]>`
-    SELECT datname FROM pg_database WHERE datname LIKE 'ranch_pf_%'`) {
-    await admin.unsafe(`DROP DATABASE IF EXISTS ${name.datname} WITH (FORCE)`);
+  // Enumerate first, then drop every clone AT ONCE. Sequential drops were the
+  // part of this file that went red on the CI runner (>5s); one round trip in
+  // parallel is both cheaper and bounded by the hook timeout above.
+  const clones = await admin<{ datname: string }[]>`
+    SELECT datname FROM pg_database WHERE datname LIKE 'ranch_pf_%'`;
+  const results = await Promise.allSettled(
+    clones.map(({ datname }) =>
+      admin.unsafe(`DROP DATABASE IF EXISTS ${datname} WITH (FORCE)`)
+    )
+  );
+  const failed = results
+    .map((r, i) => (r.status === "rejected" ? clones[i].datname : null))
+    .filter((n): n is string => n !== null);
+  if (failed.length > 0) {
+    // Reported, never fatal: a leftover scratch database is dropped by the next
+    // run's `clone()`, and a slow disk must not turn every green assertion red.
+    console.warn(`[preflight0018] could not drop: ${failed.join(", ")}`);
   }
-  await admin.end();
-});
+  await admin.end({ timeout: END_TIMEOUT_S });
+}, HOOK_TIMEOUT_MS);
 
 /** Clone the true shape and return a connection to the clone. */
 async function clone(name: string, inject: (db: Sql) => Promise<void>): Promise<Sql> {
@@ -377,10 +419,10 @@ describe("injected faults — the preflight REFUSES each one", () => {
       expect(report.failures.map((f) => f.id)).toEqual(["no-long-transactions"]);
     } finally {
       await holding.catch(() => {});
-      await holder.end({ timeout: 1 });
-      await db.end();
+      await holder.end({ timeout: END_TIMEOUT_S });
+      await db.end({ timeout: END_TIMEOUT_S });
     }
-  });
+  }, LOCK_TEST_TIMEOUT_MS);
 });
 
 describe("no false alarms — the cases the old runbook wrongly aborted on", () => {

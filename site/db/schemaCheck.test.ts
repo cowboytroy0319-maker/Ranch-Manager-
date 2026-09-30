@@ -57,6 +57,18 @@ const SITE_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 const UQ_RESTOCK = "uq_restock_log_operation_request";
 const UQ_PASTURE = "uq_pasture_activities_operation_request";
 
+// ---------------------------------------------------------------------------
+// HARNESS TIMING — bun's default hook timeout is 5s; these hooks run real DDL.
+// ---------------------------------------------------------------------------
+// `beforeAll` creates a scratch database and applies all 20 migrations to it,
+// and `afterAll` drops it. `CREATE DATABASE`/`DROP DATABASE` force a cluster-wide
+// checkpoint, which is several times slower on a shared CI runner than here —
+// and a timeout is a hard failure of the whole file even when every assertion
+// passed. That is exactly how the sibling suite went red (run 36665807249, head
+// 4682987). Same explicit headroom here, and the pool shutdowns are bounded.
+const HOOK_TIMEOUT_MS = 120_000;
+const END_TIMEOUT_S = 5;
+
 const withDb = (dbName: string): string => {
   const parsed = new URL(url);
   parsed.pathname = `/${dbName}`;
@@ -115,17 +127,17 @@ beforeAll(async () => {
   await admin.unsafe(`CREATE DATABASE ${GATE_DB}`);
   db = postgres(withDb(GATE_DB), { max: 1, onnotice: () => {} });
   await applyAllMigrations(db);
-});
+}, HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
   try {
-    await db.end();
+    await db.end({ timeout: END_TIMEOUT_S });
   } catch {
     /* best effort */
   }
   await admin.unsafe(`DROP DATABASE IF EXISTS ${GATE_DB} WITH (FORCE)`);
-  await admin.end();
-});
+  await admin.end({ timeout: END_TIMEOUT_S });
+}, HOOK_TIMEOUT_MS);
 
 describe("a correct database passes the gate", () => {
   test("every migration applied + every required object present (including both uq_* constraints)", async () => {
