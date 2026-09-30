@@ -30,8 +30,13 @@ const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "migrations
 
 /** Split a .sql file into individual statements on semicolons (simple DDL —
  * no semicolons inside string literals in our migrations). `--` comment lines
- * are stripped first so semicolons inside comments can't break the split. */
-function splitStatements(sqlText: string): string[] {
+ * are stripped first so semicolons inside comments can't break the split.
+ *
+ * EXPORTED so a test can apply a migration file exactly the way this runner
+ * does (db/migration0018Legacy.test.ts builds a legacy-shaped scratch database
+ * from 0001…0017 and then applies 0018 through this same splitter — a test that
+ * splits differently would not be testing the thing that runs in production). */
+export function splitStatements(sqlText: string): string[] {
   const withoutComments = sqlText
     .split("\n")
     .filter((line) => !line.trim().startsWith("--"))
