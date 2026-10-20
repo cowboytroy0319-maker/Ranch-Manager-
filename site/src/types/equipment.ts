@@ -75,6 +75,11 @@ export type MaintenanceRecord = {
   next_due_hours: number | null;
   next_due_miles: number | null;
   vendor: string | null;
+  /** The linked ledger row (audit Phase 2): null when the record carries no
+   *  expense yet (legacy rows, zero cost, record-only saves) or when the
+   *  target database is missing the 0018 link columns. */
+  expense_id?: number | null;
+  expense_amount_cents?: number | null;
 };
 
 export type FuelEntry = {
@@ -90,6 +95,9 @@ export type FuelEntry = {
   meter_miles: number | null;
   location: string | null;
   notes: string | null;
+  /** Same linked-ledger fields as MaintenanceRecord (audit Phase 2). */
+  expense_id?: number | null;
+  expense_amount_cents?: number | null;
 };
 
 export type EquipmentData = {

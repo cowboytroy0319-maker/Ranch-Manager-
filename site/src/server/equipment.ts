@@ -36,6 +36,23 @@ export const getEquipmentData = createServerFn().handler(async (): Promise<Equip
   try {
     const auth = await requireAuth();
     const db = sql();
+    // Link-column discovery (the D2 defensive pattern, expenseSchema): on a
+    // database without 0018 the join below is skipped entirely and every row
+    // reads as unlinked instead of the page dying on an absent column.
+    const linkCols = await loadExpenseLinkColumns(db);
+    const linked = linkCols.sourceType && linkCols.sourceId;
+    const maintExpenseJoin = linked
+      ? db`LEFT JOIN expenses xm ON xm.source_type = 'maintenance' AND xm.source_id = m.id`
+      : db``;
+    const maintExpenseSelect = linked
+      ? db`xm.id AS expense_id, xm.amount_cents AS expense_amount_cents, (xm.id IS NOT NULL) AS expense_linked`
+      : db`NULL::int AS expense_id, NULL::int AS expense_amount_cents, false AS expense_linked`;
+    const fuelExpenseJoin = linked
+      ? db`LEFT JOIN expenses xf ON xf.source_type = 'fuel_log' AND xf.source_id = f.id`
+      : db``;
+    const fuelExpenseSelect = linked
+      ? db`xf.id AS expense_id, xf.amount_cents AS expense_amount_cents, (xf.id IS NOT NULL) AS expense_linked`
+      : db`NULL::int AS expense_id, NULL::int AS expense_amount_cents, false AS expense_linked`;
     const [equipRows, maintRows, fuelRows] = await Promise.all([
       db`
         SELECT id, name, category, make, model, year,
@@ -46,23 +63,27 @@ export const getEquipmentData = createServerFn().handler(async (): Promise<Equip
         WHERE operation_id = ${auth.operationId}
         ORDER BY category, name, id`,
       db`
-        SELECT id, equipment_id, to_char(service_date, 'YYYY-MM-DD') AS service_date, service_type,
-               description, cost_cents,
-               meter_hours::float8 AS meter_hours, meter_miles::float8 AS meter_miles, status,
-               to_char(next_due_date, 'YYYY-MM-DD') AS next_due_date,
-               next_due_hours::float8 AS next_due_hours, next_due_miles::float8 AS next_due_miles,
-               vendor
-        FROM maintenance_records
-        WHERE operation_id = ${auth.operationId}
-        ORDER BY service_date DESC, id DESC`,
+        SELECT m.id, m.equipment_id, to_char(m.service_date, 'YYYY-MM-DD') AS service_date, m.service_type,
+               m.description, m.cost_cents,
+               m.meter_hours::float8 AS meter_hours, m.meter_miles::float8 AS meter_miles, m.status,
+               to_char(m.next_due_date, 'YYYY-MM-DD') AS next_due_date,
+               m.next_due_hours::float8 AS next_due_hours, m.next_due_miles::float8 AS next_due_miles,
+               m.vendor,
+               ${maintExpenseSelect}
+        FROM maintenance_records m
+        ${maintExpenseJoin}
+        WHERE m.operation_id = ${auth.operationId}
+        ORDER BY m.service_date DESC, m.id DESC`,
       db`
         SELECT f.id, f.equipment_id, e.name AS equipment_name,
                to_char(f.fuel_date, 'YYYY-MM-DD') AS fuel_date, f.fuel_type,
                f.gallons::float8 AS gallons, f.cost_cents,
                f.price_per_gal_cents, f.meter_hours::float8 AS meter_hours,
-               f.meter_miles::float8 AS meter_miles, f.location, f.notes
+               f.meter_miles::float8 AS meter_miles, f.location, f.notes,
+               ${fuelExpenseSelect}
         FROM fuel_log f
         LEFT JOIN equipment e ON e.id = f.equipment_id
+        ${fuelExpenseJoin}
         WHERE f.operation_id = ${auth.operationId}
         ORDER BY f.fuel_date DESC, f.id DESC
         LIMIT 300`,
