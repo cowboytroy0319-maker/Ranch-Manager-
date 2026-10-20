@@ -75,10 +75,10 @@ const linkedExpense = async (
   sourceType: string,
   sourceId: number
 ): Promise<
-  { id: number; expense_date: string; category: string; amount_cents: number; vendor: string | null; equipment_id: number | null }[]
+  { id: number; expense_date: string; category: string; amount_cents: number; vendor: string | null; notes: string | null; equipment_id: number | null }[]
 > =>
   await db`
-    SELECT id, to_char(expense_date, 'YYYY-MM-DD') AS expense_date, category, amount_cents, vendor, equipment_id
+    SELECT id, to_char(expense_date, 'YYYY-MM-DD') AS expense_date, category, amount_cents, vendor, notes, equipment_id
     FROM expenses
     WHERE operation_id = ${operationId} AND source_type = ${sourceType} AND source_id = ${sourceId}`;
 
@@ -199,6 +199,157 @@ describe("S2 — fuel with cost ⇒ one linked fuel expense", () => {
     expect(linked[0].amount_cents).toBe(8905);
     expect(linked[0].expense_date).toBe("2026-10-20");
     expect(linked[0].equipment_id).toBe(eqAId);
+    // What the operator typed reaches the ledger: the fill-up's location is
+    // the vendor of the purchase, the notes pass through verbatim.
+    expect(linked[0].vendor).toBe("Main tank");
+    expect(linked[0].notes).toBe("Fall fill");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S2b — the fuel ledger row carries what the operator typed (Phase 3 polish:
+// fuel-linked expenses were created with an EMPTY vendor — logFuelCore had the
+// form's location + notes in hand and wrote neither). The mapping, same on
+// create and edit: location → vendor, notes verbatim, blank stays NULL. No
+// fabricated vendor, no silently dropped context. deleteFuelCore removes the
+// row and needs no mapping.
+// ---------------------------------------------------------------------------
+
+describe("S2b — the linked fuel expense carries what the operator typed", () => {
+  test("location + notes land on the ledger row verbatim — no invented 'Fuel fill-up' label", async () => {
+    const res = await logFuelCore(db, opAId, {
+      client_request_id: crypto.randomUUID(),
+      create_expense: true,
+      equipment_id: eqAId,
+      fuel_date: today(),
+      fuel_type: "diesel",
+      gallons: 30,
+      cost_cents: 10500,
+      location: "Triple C Co-op",
+      notes: "Off-road diesel, tax-exempt",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const linked = await linkedExpense(opAId, "fuel_log", res.id);
+    expect(linked.length).toBe(1);
+    expect(linked[0].vendor).toBe("Triple C Co-op");
+    expect(linked[0].notes).toBe("Off-road diesel, tax-exempt");
+  });
+
+  test("no location ⇒ the vendor stays NULL (never fabricated); no notes ⇒ notes stay NULL too", async () => {
+    const res = await logFuelCore(db, opAId, {
+      client_request_id: crypto.randomUUID(),
+      create_expense: true,
+      equipment_id: eqAId,
+      fuel_date: today(),
+      fuel_type: "gasoline",
+      gallons: 8,
+      cost_cents: 3200,
+      location: null,
+      notes: null,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const linked = await linkedExpense(opAId, "fuel_log", res.id);
+    expect(linked.length).toBe(1);
+    expect(linked[0].vendor).toBeNull();
+    expect(linked[0].notes).toBeNull();
+  });
+
+  test("each half maps independently: notes-only keeps vendor NULL, location-only keeps notes NULL", async () => {
+    const notesOnly = await logFuelCore(db, opAId, {
+      client_request_id: crypto.randomUUID(),
+      create_expense: true,
+      equipment_id: eqAId,
+      fuel_date: today(),
+      fuel_type: "diesel",
+      gallons: 12,
+      cost_cents: 4800,
+      location: null,
+      notes: "bulk tank behind the barn",
+    });
+    expect(notesOnly.ok).toBe(true);
+    if (!notesOnly.ok) return;
+    const [l1] = await linkedExpense(opAId, "fuel_log", notesOnly.id);
+    expect(l1.vendor).toBeNull();
+    expect(l1.notes).toBe("bulk tank behind the barn");
+
+    const locationOnly = await logFuelCore(db, opAId, {
+      client_request_id: crypto.randomUUID(),
+      create_expense: true,
+      equipment_id: eqAId,
+      fuel_date: today(),
+      fuel_type: "diesel",
+      gallons: 13,
+      cost_cents: 5200,
+      location: "Fuelman station",
+      notes: null,
+    });
+    expect(locationOnly.ok).toBe(true);
+    if (!locationOnly.ok) return;
+    const [l2] = await linkedExpense(opAId, "fuel_log", locationOnly.id);
+    expect(l2.vendor).toBe("Fuelman station");
+    expect(l2.notes).toBeNull();
+  });
+
+  test("editing the fill-up updates the SAME ledger row's vendor/notes in place", async () => {
+    const created = await logFuelCore(db, opAId, {
+      client_request_id: crypto.randomUUID(),
+      create_expense: true,
+      equipment_id: eqAId,
+      fuel_date: "2026-10-05",
+      fuel_type: "diesel",
+      gallons: 20,
+      cost_cents: 8000,
+      location: "Co-op",
+      notes: "first trip",
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const before = await linkedExpense(opAId, "fuel_log", created.id);
+    expect(before.length).toBe(1);
+    expect(before[0].vendor).toBe("Co-op");
+    expect(before[0].notes).toBe("first trip");
+
+    const edited = await updateFuelCore(db, opAId, {
+      id: created.id,
+      fuel_date: "2026-10-05",
+      fuel_type: "diesel",
+      gallons: 20,
+      cost_cents: 8000,
+      location: "Petro-West",
+      notes: "wrong station at first",
+      meter_hours: null,
+      meter_miles: null,
+    });
+    expect(edited.ok).toBe(true);
+    if (!edited.ok) return;
+    const after = await linkedExpense(opAId, "fuel_log", created.id);
+    expect(after.length).toBe(1);
+    expect(after[0].id).toBe(before[0].id); // the SAME row — never a second one
+    expect(after[0].vendor).toBe("Petro-West");
+    expect(after[0].notes).toBe("wrong station at first");
+
+    // Blank fields blank the ledger row's fields too — the edit keeps the
+    // record and its expense telling one story.
+    const cleared = await updateFuelCore(db, opAId, {
+      id: created.id,
+      fuel_date: "2026-10-05",
+      fuel_type: "diesel",
+      gallons: 20,
+      cost_cents: 8000,
+      location: null,
+      notes: null,
+      meter_hours: null,
+      meter_miles: null,
+    });
+    expect(cleared.ok).toBe(true);
+    if (!cleared.ok) return;
+    const blanked = await linkedExpense(opAId, "fuel_log", created.id);
+    expect(blanked.length).toBe(1);
+    expect(blanked[0].id).toBe(before[0].id);
+    expect(blanked[0].vendor).toBeNull();
+    expect(blanked[0].notes).toBeNull();
   });
 });
 

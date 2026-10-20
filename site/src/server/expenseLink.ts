@@ -55,13 +55,15 @@ export const EXPENSE_SOURCE_REGISTRY: Record<
   fuel_log: { category: "fuel", jump: "/equipment" },
 };
 
-/** The shape of a linked expense the caller wants created. */
+/** The shape of a linked expense the caller wants created. `notes` is the
+ *  operator's own words only (string | null): a linked row carries exactly
+ *  what was typed — nothing is invented when the field is blank. */
 export type LinkedExpenseInput = {
   category: LinkedExpenseCategory;
   expense_date: string;
   amount_cents: number;
   vendor: string | null;
-  notes: string;
+  notes: string | null;
   source_type: LinkedExpenseSourceType;
   source_id: number;
   pasture_id?: number | null;

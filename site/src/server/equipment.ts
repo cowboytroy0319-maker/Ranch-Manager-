@@ -327,12 +327,19 @@ export async function logFuelCore(
     if (!row) return { ok: false, error: "That equipment doesn't exist in this ranch." };
     const wantsExpense = f.create_expense && f.cost_cents !== null && f.cost_cents > 0;
     if (wantsExpense) {
+      // The ledger row carries exactly what the operator typed (Phase 3 polish,
+      // verifier finding: fuel-linked expenses were created with an empty
+      // vendor). For a fill-up the location IS the vendor of the purchase —
+      // the station/tank where the fuel was bought — so it becomes vendor;
+      // notes pass through verbatim. Nothing is invented when a field is
+      // blank: a blank location stays a NULL vendor, a blank note stays a
+      // NULL note (no fabricated vendor, no silently dropped context).
       await insertLinkedExpense(tx, operationId, {
         category: "fuel",
         expense_date: f.fuel_date,
         amount_cents: f.cost_cents as number,
-        vendor: null,
-        notes: f.notes ? `Fuel fill-up — ${f.notes}` : "Fuel fill-up",
+        vendor: f.location,
+        notes: f.notes,
         source_type: "fuel_log",
         source_id: row.id,
         equipment_id: f.equipment_id,
@@ -548,11 +555,14 @@ export async function updateFuelCore(
       sourceId: r.id,
       costCents: r.cost_cents,
       expense: {
+        // Same mapping as logFuelCore (the edit must keep the ledger row
+        // consistent with the record): location → vendor, notes verbatim,
+        // blank stays NULL — nothing invented, nothing dropped.
         category: "fuel",
         expense_date: r.fuel_date,
         amount_cents: r.cost_cents as number,
-        vendor: null,
-        notes: r.notes ? `Fuel fill-up — ${r.notes}` : "Fuel fill-up",
+        vendor: r.location,
+        notes: r.notes,
         source_type: "fuel_log",
         source_id: r.id,
         equipment_id: row.equipment_id,
