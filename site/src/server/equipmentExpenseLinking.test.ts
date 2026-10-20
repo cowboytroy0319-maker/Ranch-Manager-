@@ -42,6 +42,14 @@ import {
   deleteFuelCore,
   deleteMaintenanceCore,
 } from "~/server/equipment";
+import { fuelSummaryCore } from "~/server/costs";
+import {
+  deleteExpenseCore,
+  linkedExpenseDeleteRefusal,
+  linkedExpenseEditRefusal,
+  saveExpenseCore,
+  type ExpenseInput,
+} from "~/server/expenses";
 import { restockItemCore, updateRestockCore, deleteRestockCore } from "~/server/feed";
 import {
   savePastureActivityCore,
@@ -919,5 +927,206 @@ describe("regression — restock + pasture still behave exactly as on 0018-era c
     expect(EXPENSE_SOURCE_REGISTRY.pasture_activity).toEqual({ category: "land_pasture", jump: "/pasture" });
     expect(EXPENSE_SOURCE_REGISTRY.maintenance).toEqual({ category: "repairs_maintenance", jump: "/equipment" });
     expect(EXPENSE_SOURCE_REGISTRY.fuel_log).toEqual({ category: "fuel", jump: "/equipment" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D2 — the fuel de-dupe: the dashboard's fuel stat reads the LEDGER (one read
+// per fill-up), with the honest fuel_log fallbacks.
+// ---------------------------------------------------------------------------
+describe("D2 — the dashboard fuel stat reads the ledger once (no double-count)", () => {
+  test("a fill-up with its linked ledger row is counted ONCE — not fuel_log + ledger", async () => {
+    const [op] = await db<[{ id: number }]>`INSERT INTO operations (name) VALUES ('Dedupe Ranch') RETURNING id`;
+    const [eq] = await db<[{ id: number }]>`
+      INSERT INTO equipment (operation_id, name, category) VALUES (${op.id}, 'Dedupe Truck', 'truck') RETURNING id`;
+    try {
+      const created = await logFuelCore(db, op.id, {
+        client_request_id: `dedupe-${Date.now()}`,
+        create_expense: true,
+        equipment_id: eq.id,
+        fuel_date: today(),
+        fuel_type: "diesel",
+        gallons: 12.5,
+        cost_cents: 4899,
+        location: "Dedupe tank",
+        notes: null,
+      });
+      expect(created.ok).toBe(true);
+      // Both halves exist: the fuel_log row AND exactly one ledger row.
+      expect((await linkedExpense(op.id, "fuel_log", created.ok ? created.id : 0)).length).toBe(1);
+      const summary = await fuelSummaryCore(db, op.id, { sourceType: true, sourceId: true });
+      expect(summary).not.toBeNull();
+      if (!summary) return;
+      expect(summary.source).toBe("ledger");
+      expect(summary.totalEntries).toBe(1);
+      expect(summary.totalCents).toBe(4899); // NOT 9798 — the double-count this fix exists for
+      expect(summary.gallons).toBe(12.5);
+      const machine = summary.byEquipment.find((r) => r.equipment_name === "Dedupe Truck");
+      expect(machine).toBeDefined();
+      if (!machine) return;
+      expect(machine.cost_cents).toBe(4899);
+      expect(machine.gallons).toBe(12.5);
+    } finally {
+      await db`DELETE FROM operations WHERE id = ${op.id}`;
+    }
+  });
+
+  test("no linked ledger rows (legacy fill-ups) → falls back to fuel_log", async () => {
+    const [op] = await db<[{ id: number }]>`INSERT INTO operations (name) VALUES ('Legacy Fuel Ranch') RETURNING id`;
+    try {
+      await db`
+        INSERT INTO fuel_log (operation_id, fuel_date, fuel_type, gallons, cost_cents, client_request_id)
+        VALUES (${op.id}, ${today()}, 'diesel', 8, 2500, 'legacy-fill-no-ledger')`;
+      const summary = await fuelSummaryCore(db, op.id, { sourceType: true, sourceId: true });
+      expect(summary).not.toBeNull();
+      if (!summary) return;
+      expect(summary.source).toBe("fuel_log");
+      expect(summary.totalEntries).toBe(1);
+      expect(summary.totalCents).toBe(2500);
+      expect(summary.gallons).toBe(8);
+    } finally {
+      await db`DELETE FROM operations WHERE id = ${op.id}`;
+    }
+  });
+
+  test("link columns absent (0018 unapplied) → the fuel_log fallback keeps working", async () => {
+    const [op] = await db<[{ id: number }]>`INSERT INTO operations (name) VALUES ('No Link Cols Ranch') RETURNING id`;
+    try {
+      await db`
+        INSERT INTO fuel_log (operation_id, fuel_date, fuel_type, gallons, cost_cents, client_request_id)
+        VALUES (${op.id}, ${today()}, 'diesel', 10, 3140, 'legacy-fill-no-cols')`;
+      const summary = await fuelSummaryCore(db, op.id, { sourceType: false, sourceId: false });
+      expect(summary).not.toBeNull();
+      if (!summary) return;
+      expect(summary.source).toBe("fuel_log");
+      expect(summary.totalCents).toBe(3140);
+      expect(summary.totalEntries).toBe(1);
+    } finally {
+      await db`DELETE FROM operations WHERE id = ${op.id}`;
+    }
+  });
+
+  test("the loader's link join reports the linked ledger row on the maintenance record", async () => {
+    const created = await logMaintenanceCore(db, opAId, {
+      client_request_id: `join-check-${Date.now()}`,
+      create_expense: true,
+      equipment_id: eqAId,
+      service_date: today(),
+      service_type: "repair",
+      description: "Join check",
+      cost_cents: 775,
+      meter_hours: null,
+      meter_miles: null,
+      status: "done",
+      next_due_date: null,
+      next_due_hours: null,
+      next_due_miles: null,
+      vendor: null,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const joined = await db<[{ id: number; expense_id: number | null }]>`
+      SELECT m.id, xm.id AS expense_id
+      FROM maintenance_records m
+      LEFT JOIN expenses xm ON xm.source_type = 'maintenance' AND xm.source_id = m.id
+      WHERE m.id = ${created.id} AND m.operation_id = ${opAId}`;
+    expect(joined.length).toBe(1);
+    expect(joined[0].expense_id).not.toBeNull();
+    const voided = await deleteMaintenanceCore(db, opAId, created.id);
+    expect(voided.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Expenses-side guards name WHERE the source record lives (part 2 item 3).
+// ---------------------------------------------------------------------------
+describe("linked-expense refusals name where the record is corrected", () => {
+  test("a linked repair expense can only be edited through its equipment row", async () => {
+    const created = await logMaintenanceCore(db, opAId, {
+      client_request_id: `refusal-maint-${Date.now()}`,
+      create_expense: true,
+      equipment_id: eqAId,
+      service_date: today(),
+      service_type: "repair",
+      description: "Refusal test",
+      cost_cents: 12300,
+      meter_hours: null,
+      meter_miles: null,
+      status: "done",
+      next_due_date: null,
+      next_due_hours: null,
+      next_due_miles: null,
+      vendor: "Shop",
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const linked = await linkedExpense(opAId, "maintenance", created.id);
+    expect(linked.length).toBe(1);
+    const sneakyEdit: ExpenseInput = {
+      id: linked[0].id,
+      expense_date: today(),
+      category: "repairs_maintenance",
+      amount_cents: 99999,
+      vendor: "Sneaky",
+      paid_by: null,
+      herd_group_id: null,
+      pasture_id: null,
+      equipment_id: null,
+      job: null,
+      notes: null,
+    };
+    const badEdit = await saveExpenseCore(db, opAId, sneakyEdit);
+    expect(badEdit.ok).toBe(false);
+    if (!badEdit.ok) expect(badEdit.error).toContain("Equipment page's Service & maintenance");
+    const badDelete = await deleteExpenseCore(db, opAId, linked[0].id);
+    expect(badDelete.ok).toBe(false);
+    if (!badDelete.ok) expect(badDelete.error).toContain("void that service record on the Equipment page");
+    const voided = await deleteMaintenanceCore(db, opAId, created.id);
+    expect(voided.ok).toBe(true);
+  });
+
+  test("a linked fuel expense can only be voided through its fill-up row", async () => {
+    const created = await logFuelCore(db, opAId, {
+      client_request_id: `refusal-fuel-${Date.now()}`,
+      create_expense: true,
+      equipment_id: eqAId,
+      fuel_date: today(),
+      fuel_type: "diesel",
+      gallons: 5,
+      cost_cents: 1999,
+      location: null,
+      notes: null,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const linked = await linkedExpense(opAId, "fuel_log", created.id);
+    expect(linked.length).toBe(1);
+    const badEdit = await saveExpenseCore(db, opAId, {
+      id: linked[0].id,
+      expense_date: today(),
+      category: "fuel",
+      amount_cents: 1,
+      vendor: "Sneaky",
+      paid_by: null,
+      herd_group_id: null,
+      pasture_id: null,
+      equipment_id: null,
+      job: null,
+      notes: null,
+    });
+    expect(badEdit.ok).toBe(false);
+    if (!badEdit.ok) expect(badEdit.error).toContain("Equipment page's Fuel usage");
+    const badDelete = await deleteExpenseCore(db, opAId, linked[0].id);
+    expect(badDelete.ok).toBe(false);
+    if (!badDelete.ok) expect(badDelete.error).toContain("void that fill-up on the Equipment page");
+    const voided = await deleteFuelCore(db, opAId, created.id);
+    expect(voided.ok).toBe(true);
+  });
+
+  test("the restock/pasture refusals keep their original Phase-1 wording", () => {
+    expect(linkedExpenseEditRefusal("restock")).toContain("edit it from that record instead");
+    expect(linkedExpenseEditRefusal("pasture_activity")).toContain("edit it from that record instead");
+    expect(linkedExpenseDeleteRefusal("restock")).toContain("undo that record");
+    expect(linkedExpenseDeleteRefusal("pasture_activity")).toContain("undo that record");
   });
 });

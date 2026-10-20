@@ -1,10 +1,13 @@
 // ============================================================================
 // Ranch Manager Pro — Expenses server function (the only place that talks to
 // the database for expense data). Reads the cost ledger the CostsSnapshot +
-// /expenses route render. Fuel is intentionally NOT read here — it stays
-// sourced from `fuel_log` via getCostData so nothing is double-counted.
-// Maintenance spend is read from expenses.category='repairs_maintenance' (the
-// ledger), NOT from maintenance_records, so the dashboard shows one figure.
+// /expenses route render. Every category in the ledger is read here, including
+// the linked fuel rows (source_type='fuel_log'); getCostData (costs.ts) reads
+// the LEDGER first for its fuel stat (audit D2) so the headline and this
+// ledger never disagree, falling back to fuel_log when the link columns or
+// rows are absent. Maintenance spend is read from
+// expenses.category='repairs_maintenance' (the ledger), NOT from
+// maintenance_records, so the dashboard shows one figure.
 //
 // Linked expenses (source_type = 'restock' | 'pasture_activity') are created
 // ONLY by the feed/pasture server fns — the expenses module never fabricates
@@ -328,6 +331,31 @@ async function readLinkedSourceType(
   return existing[0]?.source_type ?? null;
 }
 
+/** The "correct it at the source" refusals, named per source (audit Phase 2
+ *  part 2): a linked expense is changed only through the record that owns it,
+ *  and the refusal says WHERE that record lives. The restock/pasture wordings
+ *  are the original Phase-1 contract (asserted verbatim by tests); the
+ *  equipment sources name the Equipment page section, which now owns the
+ *  edit/void row actions for its service and fuel records. */
+export function linkedExpenseEditRefusal(sourceType: string | null): string {
+  if (sourceType === "maintenance") {
+    return "This expense was created from an equipment service record — edit it from the Equipment page's Service & maintenance list instead.";
+  }
+  if (sourceType === "fuel_log") {
+    return "This expense was created from a fuel fill-up — edit it from the Equipment page's Fuel usage list instead.";
+  }
+  return "This expense was created from a linked record (restock, pasture activity, equipment service, or fuel fill-up) — edit it from that record instead.";
+}
+export function linkedExpenseDeleteRefusal(sourceType: string | null): string {
+  if (sourceType === "maintenance") {
+    return "This expense came from an equipment service record — void that service record on the Equipment page to remove it.";
+  }
+  if (sourceType === "fuel_log") {
+    return "This expense came from a fuel fill-up — void that fill-up on the Equipment page to remove it.";
+  }
+  return "This expense came from a linked record (restock, pasture activity, equipment service, or fuel fill-up) — undo that record to remove it.";
+}
+
 /** Injectable expense insert/update — the exact SQL the saveExpense handler
  *  runs, scoped by operation_id. Linked rows (source_type != null) are owned
  *  by their source record and are REJECTED here so the UI can't edit them. */
@@ -341,8 +369,7 @@ export async function saveExpenseCore(
     if (linked !== null) {
       return {
         ok: false,
-        error:
-          "This expense was created from a linked record (restock, pasture activity, equipment service, or fuel fill-up) — edit it from that record instead.",
+        error: linkedExpenseEditRefusal(linked),
       };
     }
     const updated = await db`
@@ -396,8 +423,7 @@ export async function deleteExpenseCore(
   if (reason !== null) {
     return {
       ok: false,
-      error:
-        "This expense came from a linked record (restock, pasture activity, equipment service, or fuel fill-up) — undo that record to remove it.",
+      error: linkedExpenseDeleteRefusal(reason),
     };
   }
   const deleted = await db`DELETE FROM expenses WHERE id=${id} AND operation_id=${operationId} RETURNING id`;

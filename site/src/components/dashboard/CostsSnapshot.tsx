@@ -45,9 +45,10 @@ export function CostsSnapshot({ data, expenses }: { data: CostData; expenses: Ex
         <Stat label="Insurance" value={hasExpenses ? fmt(cat("insurance")) : "—"} sub={hasExpenses ? sub("insurance") : "no expenses"} />
       </div>
       <div className="grid gap-5 lg:grid-cols-5">
-        {/* Fuel by equipment (fuel_log) */}
+        {/* Fuel by equipment — ledger-first (D2): the linked fuel ledger rows,
+            joined to fuel_log for gallons; falls back to fuel_log itself. */}
         <Card className="lg:col-span-2">
-          <CardTitle title="Fuel spend by equipment" sub={`${fuel?.month ?? "this month"} · from your fuel log`} right={<Badge tone="amber">Real data</Badge>} />
+          <CardTitle title="Fuel spend by equipment" sub={`${fuel?.month ?? "this month"} · from ${fuel?.source === "ledger" ? "the expenses ledger" : "your fuel log"}`} right={<Badge tone="amber">Real data</Badge>} />
           {fuel && fuel.byEquipment.length > 0 ? (
             <div className="space-y-3">
               {fuel.byEquipment.map((r, i) => (
@@ -113,7 +114,7 @@ export function CostsSnapshot({ data, expenses }: { data: CostData; expenses: Ex
           ) : (
             <p className="text-sm text-stone-500">
               No operating expenses are logged for this month yet — the breakdown (per herd, per pasture, per equipment, per job) will appear
-              here as soon as you record them. Fuel always comes from your fuel log.
+              here as soon as you record them. A fill-up with a cost flows into this ledger automatically.
             </p>
           )}
         </Card>
