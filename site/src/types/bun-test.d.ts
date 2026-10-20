@@ -29,6 +29,10 @@ interface BunTestExpect<T> {
   toThrow(message?: string | RegExp): void;
   toContain(item: unknown): void;
   toMatch(regex: RegExp): void;
+  // Numeric range matchers used by the equipment expense-linking suite
+  // (row ids and key lengths). Both are real Bun matchers.
+  toBeGreaterThan(expected: number): void;
+  toBeLessThan(expected: number): void;
   // Matchers used by the auth integration tests (negation + presence).
   not: BunTestExpect<T>;
   toBeDefined(): void;

@@ -24,7 +24,9 @@
  *      restock double-submit guarantee. Before those were listed, dropping both
  *      of them left the gate reporting OK/exit 0 — proved on a real database by
  *      the independent verifier, and encoded as a test in
- *      `db/schemaCheck.test.ts`.
+ *      `db/schemaCheck.test.ts`. The 0021 equipment idempotency UNIQUEs
+ *      (`uq_maintenance_records_operation_request`,
+ *      `uq_fuel_log_operation_request`) are required for the same reason.
  *
  * SAFETY
  *   * READ-ONLY: SELECT + catalogue lookups only. No DDL, no writes, no
@@ -88,6 +90,20 @@ export const REQUIRED_OBJECTS: RequiredObject[] = [
   // 0020 — password reset.
   { migration: "0020_password_reset.sql", kind: "table", name: "password_resets" },
   { migration: "0020_password_reset.sql", kind: "table", name: "password_reset_requests" },
+  // 0021 — equipment expense linking (audit D1 + D3): the per-operation
+  // idempotency UNIQUEs on maintenance_records and fuel_log. Same reason as the
+  // 0018 pair: with either dropped, a double-tap can duplicate a service record
+  // or a fill-up and the database no longer backs the exactly-once guarantee.
+  {
+    migration: "0021_equipment_expense_linking.sql",
+    kind: "constraint",
+    name: "uq_maintenance_records_operation_request",
+  },
+  {
+    migration: "0021_equipment_expense_linking.sql",
+    kind: "constraint",
+    name: "uq_fuel_log_operation_request",
+  },
 ];
 
 export type SchemaCheckInput = {

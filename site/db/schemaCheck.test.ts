@@ -56,6 +56,8 @@ const GATE_DB = "ranch_pf_gate";
 const SITE_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 const UQ_RESTOCK = "uq_restock_log_operation_request";
 const UQ_PASTURE = "uq_pasture_activities_operation_request";
+const UQ_MAINT = "uq_maintenance_records_operation_request";
+const UQ_FUEL = "uq_fuel_log_operation_request";
 
 // ---------------------------------------------------------------------------
 // HARNESS TIMING — bun's default hook timeout is 5s; these hooks run real DDL.
@@ -140,21 +142,23 @@ afterAll(async () => {
 }, HOOK_TIMEOUT_MS);
 
 describe("a correct database passes the gate", () => {
-  test("every migration applied + every required object present (including both uq_* constraints)", async () => {
+  test("every migration applied + every required object present (including all four uq_* constraints)", async () => {
     const result = await check();
     expect(result.missingMigrations).toEqual([]);
     expect(result.missingObjects).toEqual([]);
     expect(result.ok).toBe(true);
-    // The two constraints the manifest gained are really required objects now.
+    // The constraints the manifest gained are really required objects now.
     const { presentObjects } = await readTargetSchema(db);
     expect(presentObjects).toContain(`constraint:${UQ_RESTOCK}`);
     expect(presentObjects).toContain(`constraint:${UQ_PASTURE}`);
+    expect(presentObjects).toContain(`constraint:${UQ_MAINT}`);
+    expect(presentObjects).toContain(`constraint:${UQ_FUEL}`);
   });
 
   test("the CLI exits 0 and prints OK", () => {
     const run = runGateCli(GATE_DB);
     expect(run.status).toBe(0);
-    expect(run.stdout).toContain("OK — 20 migrations applied, 12 required objects present.");
+    expect(run.stdout).toContain("OK — 21 migrations applied, 14 required objects present.");
   });
 });
 
