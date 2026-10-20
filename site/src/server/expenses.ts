@@ -341,7 +341,8 @@ export async function saveExpenseCore(
     if (linked !== null) {
       return {
         ok: false,
-        error: "This expense was created from a hay/feed restock or pasture activity — edit it from that record instead.",
+        error:
+          "This expense was created from a linked record (restock, pasture activity, equipment service, or fuel fill-up) — edit it from that record instead.",
       };
     }
     const updated = await db`
@@ -395,7 +396,8 @@ export async function deleteExpenseCore(
   if (reason !== null) {
     return {
       ok: false,
-      error: "This expense came from a hay/feed restock or pasture activity — undo that record to remove it.",
+      error:
+        "This expense came from a linked record (restock, pasture activity, equipment service, or fuel fill-up) — undo that record to remove it.",
     };
   }
   const deleted = await db`DELETE FROM expenses WHERE id=${id} AND operation_id=${operationId} RETURNING id`;

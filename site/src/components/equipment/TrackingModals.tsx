@@ -113,6 +113,12 @@ export function LogFuelModal({
   const [form, setForm] = useState<FuelLogDraft>(emptyFuelDraft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // ONE request id per form-open (the restock precedent): every retry of THIS
+  // open form re-sends the same key, so a double-tap can never duplicate the
+  // fill-up or its linked expense. (Minimal wiring to keep the existing modal
+  // compatible with the Phase-2 server contract — the full linked-expense UI
+  // choice + banners land with the Phase-2 UI commit.)
+  const [requestId] = useState(() => crypto.randomUUID());
   const { clearDraft } = useDraftPersistence("log-fuel", form as unknown as Record<string, unknown>);
 
   const totalCents = useMemo(() => {
@@ -129,6 +135,8 @@ export function LogFuelModal({
     setSaving(true);
     setError(null);
     const payload: FuelLogInput = {
+      client_request_id: requestId,
+      create_expense: true,
       equipment_id: form.equipment_id,
       fuel_date: form.fuel_date,
       fuel_type: (FUEL_TYPES as readonly string[]).includes(form.fuel_type)
@@ -268,6 +276,9 @@ export function LogServiceModal({
   const [form, setForm] = useState<ServiceLogDraft>(emptyServiceDraft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // ONE request id per form-open (the restock precedent) — same contract as the
+  // fuel modal above; the full Phase-2 linked-expense UI lands separately.
+  const [requestId] = useState(() => crypto.randomUUID());
   const { clearDraft } = useDraftPersistence("log-service", form as unknown as Record<string, unknown>);
 
   const set = <K extends keyof ServiceLogDraft>(k: K, v: ServiceLogDraft[K]) => setForm((f) => ({ ...f, [k]: v }));
@@ -278,6 +289,8 @@ export function LogServiceModal({
     setError(null);
     const costDollars = form.cost.trim() === "" ? "" : Number(form.cost);
     const payload: MaintLogInput = {
+      client_request_id: requestId,
+      create_expense: true,
       equipment_id: form.equipment_id ?? 0,
       service_date: form.service_date,
       service_type: (MAINT_TYPES as readonly string[]).includes(form.service_type)

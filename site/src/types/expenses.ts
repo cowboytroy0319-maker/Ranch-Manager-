@@ -200,16 +200,22 @@ export function categoryTotals(
   return { amount_cents, entries };
 }
 
-/** Where a linked expense came from (the record that auto-created it). */
-export const EXPENSE_SOURCES = ["restock", "pasture_activity"] as const;
+/** Where a linked expense came from (the record that auto-created it). The two
+ *  equipment values arrive with the Phase-2 financial-workflow repair
+ *  (migration 0021 + the shared expenseLink service): a maintenance/service
+ *  record and a fuel fill-up each own ONE ledger row. */
+export const EXPENSE_SOURCES = ["restock", "pasture_activity", "maintenance", "fuel_log"] as const;
 export type ExpenseSource = (typeof EXPENSE_SOURCES)[number];
 
 export const RESTOCK_TYPE = "restock";
 export const PASTURE_ACTIVITY_TYPE = "pasture_activity";
+export const MAINTENANCE_TYPE = "maintenance";
+export const FUEL_LOG_TYPE = "fuel_log";
 
 /** A single expense row with joined dimension names resolved by the server so
  * the client never has to look them up. `linked` is true when the expense was
- * auto-created from a source record (hay/feed restock or pasture activity). */
+ * auto-created from a source record (hay/feed restock, pasture activity,
+ * equipment service, or fuel fill-up). */
 export type ExpenseRow = {
   id: number;
   expense_date: string; // YYYY-MM-DD

@@ -210,15 +210,23 @@ describe("parseFuelLogInput — the validator logFuel runs on every fill (real f
   });
 
   test("requires gallons > 0 and finite (rejects zero, blank, negative, non-numeric)", () => {
-    const base = { fuel_date: "2026-09-04" };
+    const base = { fuel_date: "2026-09-04", client_request_id: "test-fuel-key" };
     expect(() => parseFuelLogInput({ ...base, gallons: 0 })).toThrow("Gallons must be greater than zero.");
     expect(() => parseFuelLogInput({ ...base, gallons: -3 })).toThrow("Gallons must be greater than zero.");
     expect(() => parseFuelLogInput({ ...base, gallons: "" })).toThrow("Gallons must be greater than zero.");
     expect(() => parseFuelLogInput({ ...base, gallons: "abc" })).toThrow("Gallons must be greater than zero.");
   });
 
+  test("requires a request id, ≤200 chars (the per-operation idempotency key)", () => {
+    const base = { fuel_date: "2026-09-04", gallons: 10 };
+    expect(() => parseFuelLogInput({ ...base })).toThrow("A request id is required");
+    expect(() => parseFuelLogInput({ ...base, client_request_id: "x".repeat(201) })).toThrow("Request id is too long.");
+  });
+
   test("parses a valid fill: equipment optional, date kept, cost clamped at zero, blanks → null", () => {
     const out = parseFuelLogInput({
+      client_request_id: "test-fuel-key",
+      create_expense: true,
       equipment_id: 12,
       fuel_date: "2026-09-04",
       fuel_type: "gasoline",
@@ -227,6 +235,8 @@ describe("parseFuelLogInput — the validator logFuel runs on every fill (real f
       location: "  Main tank  ",
       notes: "",
     });
+    expect(out.client_request_id).toBe("test-fuel-key");
+    expect(out.create_expense).toBe(true);
     expect(out.equipment_id).toBe(12);
     expect(out.fuel_date).toBe("2026-09-04");
     expect(out.fuel_type).toBe("gasoline");
@@ -236,12 +246,14 @@ describe("parseFuelLogInput — the validator logFuel runs on every fill (real f
     expect(out.notes).toBeNull();
   });
 
-  test("unknown fuel_type defaults to diesel; negative/blank cost clamps to null or 0", () => {
-    const base = { fuel_date: "2026-09-04", gallons: 10 };
+  test("unknown fuel_type defaults to diesel; negative/blank cost clamps to null or 0; create_expense defaults true", () => {
+    const base = { fuel_date: "2026-09-04", gallons: 10, client_request_id: "test-fuel-key" };
     expect(parseFuelLogInput({ ...base, fuel_type: "jet-fuel" }).fuel_type).toBe("diesel");
     expect(parseFuelLogInput({ ...base, cost_cents: -500 }).cost_cents).toBe(0);
     expect(parseFuelLogInput({ ...base, cost_cents: "" }).cost_cents).toBeNull();
     expect(parseFuelLogInput({ ...base, equipment_id: "" }).equipment_id).toBeNull();
+    expect(parseFuelLogInput({ ...base }).create_expense).toBe(true);
+    expect(parseFuelLogInput({ ...base, create_expense: false }).create_expense).toBe(false);
   });
 });
 
@@ -256,6 +268,8 @@ describe("parseMaintLogInput — the validator logMaintenance runs on every serv
 
   test("parses a valid service: cost in cents, meters optional, defaults applied", () => {
     const out = parseMaintLogInput({
+      client_request_id: "test-maint-key",
+      create_expense: true,
       equipment_id: 7,
       service_date: "2026-09-04",
       service_type: "oil-change",
@@ -267,6 +281,8 @@ describe("parseMaintLogInput — the validator logMaintenance runs on every serv
       next_due_date: "2026-12-04",
       vendor: "Bob's Shop",
     });
+    expect(out.client_request_id).toBe("test-maint-key");
+    expect(out.create_expense).toBe(true);
     expect(out.equipment_id).toBe(7);
     expect(out.service_type).toBe("oil-change");
     expect(out.description).toBe("Oil + filter");
@@ -278,14 +294,18 @@ describe("parseMaintLogInput — the validator logMaintenance runs on every serv
     expect(out.vendor).toBe("Bob's Shop");
   });
 
-  test("meter values must be non-negative; unknown types/status fall back to defaults", () => {
-    const base = { service_date: "2026-09-04", equipment_id: 7 };
+  test("meter values must be non-negative; unknown types/status fall back to defaults; request id required", () => {
+    const base = { service_date: "2026-09-04", equipment_id: 7, client_request_id: "test-maint-key" };
+    expect(() => parseMaintLogInput({ service_date: "2026-09-04", equipment_id: 7 })).toThrow(
+      "A request id is required"
+    );
     expect(() => parseMaintLogInput({ ...base, meter_hours: -5 })).toThrow("Meter hours can't be negative.");
     expect(() => parseMaintLogInput({ ...base, meter_miles: -1 })).toThrow("Meter miles can't be negative.");
     expect(parseMaintLogInput({ ...base, service_type: "weird" }).service_type).toBe("other");
     expect(parseMaintLogInput({ ...base, status: "weird" }).status).toBe("done");
     expect(parseMaintLogInput({ ...base, cost_cents: -2 }).cost_cents).toBe(0);
     expect(parseMaintLogInput(base).meter_hours).toBeNull();
+    expect(parseMaintLogInput({ ...base, create_expense: false }).create_expense).toBe(false);
   });
 });
 

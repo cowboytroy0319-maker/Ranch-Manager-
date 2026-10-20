@@ -100,10 +100,18 @@ async function applyFile(db: Sql, file: string): Promise<void> {
   });
 }
 
-/** The production shape: every migration EXCEPT 0018, in filename order. */
+/** The production shape: every migration PRODUCTION has today — all files up
+ *  to and including 0020_password_reset.sql EXCEPT 0018, in filename order.
+ *  Migrations AFTER 0020 (0021_equipment_expense_linking.sql and later) are
+ *  NOT yet applied to production and must never leak into this fixture — the
+ *  fixture models the database the deployment gate runs against TODAY. */
+const LAST_MIGRATION_ON_PRODUCTION = "0020_password_reset.sql";
 const preRunFiles = (): string[] =>
   readdirSync(MIGRATIONS_DIR)
-    .filter((f) => f.endsWith(".sql") && f !== TARGET_MIGRATION)
+    .filter(
+      (f) =>
+        f.endsWith(".sql") && f !== TARGET_MIGRATION && f <= LAST_MIGRATION_ON_PRODUCTION
+    )
     .sort();
 
 async function buildTrueShape(db: Sql): Promise<void> {

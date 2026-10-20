@@ -7,6 +7,9 @@ import { createServerFn } from "@tanstack/react-start";
 import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
 import { loadExpenseLinkColumns } from "~/expenseSchema";
+// ONE shared linked-expense implementation (audit Phase 2) — used by the
+// restock cores below and re-exported for pasture.ts + every other importer.
+import { insertLinkedExpense } from "./expenseLink";
 import type { HerdGroupRef } from "~/types/feed";
 import {
   FEED_CATEGORIES,
@@ -795,52 +798,19 @@ export async function deleteRestockCore(
 }
 
 // ---------------------------------------------------------------------------
-// Shared linked-expense insert (used by restock + pasture activity cores).
+// Shared linked-expense service (audit Phase 2): the implementation now lives
+// in expenseLink.ts so every cost-bearing module shares ONE insert, ONE
+// registry, and ONE edit/void rule (restock semantics, generalized). It is
+// re-exported here unchanged so existing importers — pasture.ts imports
+// insertLinkedExpense from "./feed" — keep working byte-for-byte in behavior.
 // The unique index expenses_source_once_uniq backs exactly-once — a duplicate
 // (source_type, source_id) would violate it, so one source can never fund two
 // ledger rows. Errors are logged server-side; callers surface safe messages.
 // ---------------------------------------------------------------------------
-
-/** A Postgres client inside a transaction (db.begin provides tx). */
-export type Tx = import("postgres").TransactionSql;
-
-export async function insertLinkedExpense(
-  tx: Tx,
-  operationId: number,
-  e: {
-    category: "hay_feed" | "land_pasture";
-    expense_date: string;
-    amount_cents: number;
-    vendor: string | null;
-    notes: string;
-    source_type: "restock" | "pasture_activity";
-    source_id: number;
-    pasture_id?: number | null;
-  }
-): Promise<void> {
-  try {
-    await tx`
-      INSERT INTO expenses (operation_id, expense_date, category, amount_cents, vendor, notes,
-                            pasture_id, source_type, source_id)
-      VALUES (${operationId}, ${e.expense_date}, ${e.category}, ${e.amount_cents}, ${e.vendor}, ${e.notes},
-              ${e.pasture_id ?? null}, ${e.source_type}, ${e.source_id})`;
-  } catch (err) {
-    const code = (err as { code?: string }).code;
-    const raw = (err as { message?: string }).message ?? "";
-    if (code === "42703" && /source_type|source_id|paid_by/.test(raw)) {
-      // The linked-expense columns are missing: this build is running against a
-      // database that has not had migration 0018_product_blocker.sql applied.
-      // The throw aborts the CALLER's transaction, so inventory is not touched
-      // either — "a failed expense never leaves a partial inventory update".
-      console.error(
-        `[feed] linked expense refused: expenses.${/source_type/.test(raw) ? "source_type" : "source_id"} does not exist on the target database — ` +
-          `migration 0018_product_blocker.sql is unapplied. The whole transaction was rolled back; inventory was NOT changed. ` +
-          `Check the deployment with \`bun run db:check-schema\`.`
-      );
-      throw new Error(
-        "We couldn't record the expense for this restock, so nothing was changed. Please try again."
-      );
-    }
-    throw err;
-  }
-}
+export { insertLinkedExpense, findLinkedExpense, EXPENSE_SOURCE_REGISTRY } from "./expenseLink";
+export type {
+  Tx,
+  LinkedExpenseCategory,
+  LinkedExpenseSourceType,
+  LinkedExpenseInput,
+} from "./expenseLink";
