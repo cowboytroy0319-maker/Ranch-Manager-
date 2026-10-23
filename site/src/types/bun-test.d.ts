@@ -24,6 +24,7 @@ declare module "bun:test" {
 
 interface BunTestExpect<T> {
   toBe(expected: unknown): void;
+  toHaveLength(len: number): void;
   toEqual(expected: unknown): void;
   toBeNull(): void;
   toThrow(message?: string | RegExp): void;
