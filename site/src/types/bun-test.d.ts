@@ -37,4 +37,5 @@ interface BunTestExpect<T> {
   // Matchers used by the auth integration tests (negation + presence).
   not: BunTestExpect<T>;
   toBeDefined(): void;
+  toBeUndefined(): void;
 }
