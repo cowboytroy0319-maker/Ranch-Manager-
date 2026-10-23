@@ -104,6 +104,16 @@ export const REQUIRED_OBJECTS: RequiredObject[] = [
     kind: "constraint",
     name: "uq_fuel_log_operation_request",
   },
+  // 0022 — the owner's two-path fuel model: the discriminator that splits a
+  // fuel PURCHASE (one linked expense) from a bulk-tank DRAW (usage only,
+  // never an expense). Without it the dashboard cannot tell which rows carry
+  // money and the two-path writes abort on their first statement.
+  { migration: "0022_fuel_two_path.sql", kind: "column", table: "fuel_log", name: "record_kind" },
+  {
+    migration: "0022_fuel_two_path.sql",
+    kind: "constraint",
+    name: "fuel_log_record_kind_check",
+  },
 ];
 
 export type SchemaCheckInput = {

@@ -88,17 +88,18 @@ describe("the linked-expense choice reaches the payload (restock rule)", () => {
   test("add-expense keeps the cost and create_expense=true", () => {
     const p = buildFuelSubmit(
       { equipment_id: null, fuel_date: "2026-10-20", fuel_type: "diesel", gallons: 12.5, location: null, notes: null },
-      { clientRequestId: "k1", addExpense: true, costCents: 4899 }
+      { clientRequestId: "k1", addExpense: true, costCents: 4899, kind: "purchase" }
     );
     expect(p.create_expense).toBe(true);
     expect(p.cost_cents).toBe(4899);
     expect(p.client_request_id).toBe("k1");
+    expect(p.record_kind).toBe("purchase");
   });
 
   test("record-only ALWAYS sends cost_cents null — no expense can be created from that path", () => {
     const fuel = buildFuelSubmit(
       { equipment_id: null, fuel_date: "2026-10-20", fuel_type: "diesel", gallons: 12.5, location: null, notes: null },
-      { clientRequestId: "k2", addExpense: false, costCents: 4899 }
+      { clientRequestId: "k2", addExpense: false, costCents: 4899, kind: "purchase" }
     );
     expect(fuel.create_expense).toBe(false);
     expect(fuel.cost_cents).toBeNull();
@@ -108,6 +109,17 @@ describe("the linked-expense choice reaches the payload (restock rule)", () => {
     );
     expect(service.create_expense).toBe(false);
     expect(service.cost_cents).toBeNull();
+  });
+
+  test("the owner's two-path rule: a DRAW never expenses, even with the cost recorded", () => {
+    const draw = buildFuelSubmit(
+      { equipment_id: null, fuel_date: "2026-10-20", fuel_type: "diesel", gallons: 40, location: null, notes: null },
+      { clientRequestId: "k4", addExpense: true, costCents: 9600, kind: "draw" }
+    );
+    expect(draw.record_kind).toBe("draw");
+    expect(draw.create_expense).toBe(false);
+    // The draw's economics cost still rides on the log (reads exclude it from spend).
+    expect(draw.cost_cents).toBe(9600);
   });
 });
 
@@ -127,6 +139,11 @@ describe("submit labels track the money (owner wording)", () => {
     expect(fuelSubmitLabel(4899, false)).toBe(FUEL_SUBMIT_RECORD_ONLY);
     expect(FUEL_SUBMIT_WITH_EXPENSE).toBe("Save fill-up & add expense");
     expect(FUEL_SUBMIT_RECORD_ONLY).toBe("Save fill-up (record only)");
+  });
+  test("the two-path kind steers the fuel label (owner rule)", () => {
+    expect(fuelSubmitLabel(9600, true, "draw")).toBe("Save fuel usage (draw — no expense)");
+    expect(fuelSubmitLabel(null, true, "draw")).toBe("Save fuel usage (draw — no expense)");
+    expect(fuelSubmitLabel(4899, true, "purchase")).toBe(FUEL_SUBMIT_WITH_EXPENSE);
   });
 });
 
@@ -173,14 +190,21 @@ describe("result banners per outcome (restockResultMessage mirrored)", () => {
       "Already recorded — nothing changed."
     );
   });
-  test("fuel banners mirror", () => {
-    expect(fuelCreatedMessage({ ok: true, expense_created: true, duplicate: false }).text).toBe(
-      "Fill-up recorded — expense added to Expenses."
+  test("fuel banners follow the owner's two-path rule", () => {
+    expect(fuelCreatedMessage({ ok: true, expense_created: true, duplicate: false, record_kind: "purchase" }).text).toBe(
+      "Fuel purchase recorded and expense added."
     );
-    expect(fuelCreatedMessage({ ok: true, expense_created: false, duplicate: false }).text).toBe(
-      "Fill-up recorded — no expense created (no cost entered)."
+    expect(fuelCreatedMessage({ ok: true, expense_created: false, duplicate: false, record_kind: "purchase" }).text).toBe(
+      "Fuel purchase recorded — no expense created (record only)."
     );
-    expect(fuelCreatedMessage({ ok: true, expense_created: true, duplicate: true }).text).toBe(
+    expect(fuelCreatedMessage({ ok: true, expense_created: true, duplicate: true, record_kind: "purchase" }).text).toBe(
+      "Already recorded — nothing changed."
+    );
+    // A draw: usage recorded, never an expense — even when a cost rides the log.
+    expect(fuelCreatedMessage({ ok: true, expense_created: false, duplicate: false, record_kind: "draw" }).text).toBe(
+      "Fuel usage recorded — no expense (drawn from an already-purchased tank)."
+    );
+    expect(fuelCreatedMessage({ ok: true, expense_created: false, duplicate: true, record_kind: "draw" }).text).toBe(
       "Already recorded — nothing changed."
     );
   });
@@ -195,21 +219,23 @@ describe("edit + void banners (both halves, restock precedent)", () => {
   test("edit: cost kept vs cost removed", () => {
     expect(serviceEditedMessage(true)).toBe("Service record and linked expense updated.");
     expect(serviceEditedMessage(false)).toBe("Service record updated — no linked expense.");
-    expect(fuelEditedMessage(true)).toBe("Fill-up and linked expense updated.");
-    expect(fuelEditedMessage(false)).toBe("Fill-up updated — no linked expense.");
+    expect(fuelEditedMessage(true)).toBe("Fuel purchase and linked expense updated.");
+    expect(fuelEditedMessage(false)).toBe("Fuel purchase updated — no linked expense.");
+    expect(fuelEditedMessage(false, "draw")).toBe("Fuel usage updated — a draw never creates an expense.");
   });
   test("void: removed-with-expense vs nothing-linked", () => {
     expect(serviceVoidedMessage(true)).toBe("Service record voided — the linked expense was removed.");
     expect(serviceVoidedMessage(false)).toBe("Service record voided — there was no linked expense.");
-    expect(fuelVoidedMessage(true)).toBe("Fill-up voided — the linked expense was removed.");
-    expect(fuelVoidedMessage(false)).toBe("Fill-up voided — there was no linked expense.");
+    expect(fuelVoidedMessage(true)).toBe("Fuel purchase voided — the linked expense was removed.");
+    expect(fuelVoidedMessage(false)).toBe("Fuel purchase voided — there was no linked expense.");
+    expect(fuelVoidedMessage(false, "draw")).toBe("Fuel usage record voided — a draw has no expense to remove.");
   });
   test("void CONFIRM states both halves when an expense is linked", () => {
     const lines = serviceVoidConfirmLines(true, 18500);
     expect(lines[0]).toBe("This removes the service record and its linked expense.");
     expect(lines[1]).toContain("$185.00");
     const fuelLines = fuelVoidConfirmLines(true, 4899);
-    expect(fuelLines[0]).toBe("This removes the fill-up record and its linked expense.");
+    expect(fuelLines[0]).toBe("This removes the fuel purchase record and its linked expense.");
     expect(fuelLines[1]).toContain("$48.99");
   });
   test("void CONFIRM is honest when there is no linked expense", () => {
@@ -218,8 +244,14 @@ describe("edit + void banners (both halves, restock precedent)", () => {
       "There is no linked expense to remove.",
     ]);
     expect(fuelVoidConfirmLines(false, null)).toEqual([
-      "This removes the fill-up record.",
+      "This removes the fuel purchase record.",
       "There is no linked expense to remove.",
+    ]);
+  });
+  test("void CONFIRM for a draw: the usage record goes, no expense existed", () => {
+    expect(fuelVoidConfirmLines(false, null, "draw")).toEqual([
+      "This removes the fuel usage record.",
+      "A bulk-tank draw never created an expense — there is nothing to remove.",
     ]);
   });
 });

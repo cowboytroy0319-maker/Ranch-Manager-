@@ -6,7 +6,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
-import { loadExpenseLinkColumns } from "~/expenseSchema";
+import { loadExpenseLinkColumns, loadFuelRecordKindColumn } from "~/expenseSchema";
 // ONE shared linked-expense implementation (audit Phase 2) — the create/edit/
 // void cores below use it so equipment behaves exactly like restock/pasture.
 import { insertLinkedExpense, syncLinkedExpenseOnEdit, removeLinkedExpense } from "./expenseLink";
@@ -40,6 +40,10 @@ export const getEquipmentData = createServerFn().handler(async (): Promise<Equip
     // database without 0018 the join below is skipped entirely and every row
     // reads as unlinked instead of the page dying on an absent column.
     const linkCols = await loadExpenseLinkColumns(db);
+    // Same pattern for fuel_log.record_kind (0022, the owner's two-path fuel
+    // model): an un-migrated database reads every row as a purchase instead of
+    // the equipment page dying on an absent column.
+    const fuelKindCol = await loadFuelRecordKindColumn(db);
     const linked = linkCols.sourceType && linkCols.sourceId;
     const maintExpenseJoin = linked
       ? db`LEFT JOIN expenses xm ON xm.source_type = 'maintenance' AND xm.source_id = m.id`
@@ -53,6 +57,12 @@ export const getEquipmentData = createServerFn().handler(async (): Promise<Equip
     const fuelExpenseSelect = linked
       ? db`xf.id AS expense_id, xf.amount_cents AS expense_amount_cents, (xf.id IS NOT NULL) AS expense_linked`
       : db`NULL::int AS expense_id, NULL::int AS expense_amount_cents, false AS expense_linked`;
+    // record_kind: the real discriminator when 0022 has run; a typed
+    // 'purchase' when it hasn't — legacy rows WERE expensed by the single-path
+    // branch, so that is the honest read, never a page-killing absent column.
+    const fuelKindSelect = fuelKindCol
+      ? db`f.record_kind,`
+      : db`'purchase'::text AS record_kind,`;
     const [equipRows, maintRows, fuelRows] = await Promise.all([
       db`
         SELECT id, name, category, make, model, year,
@@ -80,6 +90,7 @@ export const getEquipmentData = createServerFn().handler(async (): Promise<Equip
                f.gallons::float8 AS gallons, f.cost_cents,
                f.price_per_gal_cents, f.meter_hours::float8 AS meter_hours,
                f.meter_miles::float8 AS meter_miles, f.location, f.notes,
+               ${fuelKindSelect}
                ${fuelExpenseSelect}
         FROM fuel_log f
         LEFT JOIN equipment e ON e.id = f.equipment_id
@@ -211,10 +222,20 @@ export const saveEquipment = createServerFn({ method: "POST" })
   });
 // ---------------------------------------------------------------------------
 // Validation + Write: log a fuel fill (audit Phase 2 — D2 linked-fuel model,
-// D3 idempotency). The fill-up and its ONE linked ledger row (category 'fuel',
-// source_type 'fuel_log') are written inside ONE transaction: a failed expense
-// rolls the fill-up back, and a retry with the same client_request_id applies
-// nothing. NULL/0 cost → NO expense, ever (never a silent $0 ledger row).
+// D3 idempotency; 2026-10-20 OWNER RULE — the TWO-PATH fuel model).
+//
+//   PURCHASE (station fill-up or bulk-tank delivery): money leaves → the
+//   fill-up and its ONE linked ledger row (category 'fuel', source_type
+//   'fuel_log') are written inside ONE transaction: a failed expense rolls the
+//   purchase back, and a retry with the same client_request_id applies
+//   nothing. NULL/0 cost → NO expense, ever (never a silent $0 ledger row).
+//
+//   DRAW (fuel drawn from an already-purchased bulk tank): inventory
+//   consumption → USAGE ONLY, NEVER an expense — the money was already
+//   expensed once, when the tank was bought. The draw's cost_cents may still
+//   be recorded on the log for economics (fuel value consumed); the dashboard
+//   spend reads EXCLUDE draws so the money is counted exactly once, at
+//   purchase time, while gallons/usage totals include them.
 // ---------------------------------------------------------------------------
 const optInt = optionalInt;
 const isoDate = (v: unknown): string | null => {
@@ -240,9 +261,22 @@ const parseClientRequestId = (v: unknown): string => {
   return id;
 };
 
+/** The owner's two-path fuel model (2026-10-20): every fuel_log row is either
+ *  a PURCHASE (money leaves — one linked expense, whether at the pump or a
+ *  bulk-tank delivery) or a DRAW from an already-purchased bulk tank (usage
+ *  only, never an expense). The type lives here (the server owns the rule);
+ *  the UI and trackingUI import it. */
+export const FUEL_RECORD_KINDS = ["purchase", "draw"] as const;
+export type FuelRecordKind = (typeof FUEL_RECORD_KINDS)[number];
+
 export type FuelLogInput = {
   client_request_id: string;
   create_expense: boolean;
+  /** Optional on the TYPE because legacy callers (and any pre-0022 client)
+   *  omit it; the parser and the write core both default a missing kind to
+   *  'purchase' — the single-path branch expensed every fill-up, so an
+   *  omitted kind means "money left", never the silent no-expense path. */
+  record_kind?: FuelRecordKind;
   equipment_id: number | null;
   fuel_date: string;
   fuel_type: FuelType;
@@ -258,6 +292,10 @@ export function parseFuelLogInput(raw: unknown): FuelLogInput {
   return {
     client_request_id: parseClientRequestId(d.client_request_id),
     create_expense: d.create_expense !== false,
+    // The two-path discriminator. A missing/legacy client defaults to
+    // 'purchase': the single-path branch expensed every fill-up it recorded,
+    // so an omitted kind means "money left" — never the silent no-expense path.
+    record_kind: oneOf(d.record_kind, FUEL_RECORD_KINDS) ?? "purchase",
     equipment_id: optInt(d.equipment_id),
     fuel_date: date,
     fuel_type: (oneOf(d.fuel_type, FUEL_TYPES as readonly string[]) ?? "diesel") as FuelType,
@@ -269,7 +307,7 @@ export function parseFuelLogInput(raw: unknown): FuelLogInput {
 }
 
 export type EquipmentMoneyWriteResult =
-  | { ok: true; id: number; expense_created: boolean; duplicate: boolean }
+  | { ok: true; id: number; expense_created: boolean; duplicate: boolean; record_kind?: FuelRecordKind }
   | { ok: false; error: string };
 
 export const logFuel = createServerFn({ method: "POST" })
@@ -287,13 +325,14 @@ export const logFuel = createServerFn({ method: "POST" })
     }
   });
 
-/** Injectable fuel core — the exact transaction logFuel runs (audit Phase 2).
- *  ONE transaction: duplicate precheck → the operation-scoped INSERT…SELECT →
- *  the ONE linked ledger row when a cost is present and the linked-expense
- *  choice is on. A failed expense rolls the fill-up back (never a partial
- *  write), and the DB backstops are uq_fuel_log_operation_request on
- *  (operation_id, client_request_id) for the record plus
- *  expenses_source_once_uniq for exactly-once expenses. */
+/** Injectable fuel core — the exact transaction logFuel runs (audit Phase 2;
+ *  two-path per the owner's 2026-10-20 rule). ONE transaction: duplicate
+ *  precheck → the operation-scoped INSERT…SELECT → the ONE linked ledger row
+ *  for a PURCHASE when a cost is present and the linked-expense choice is on;
+ *  a DRAW inserts the usage row and NEVER an expense. A failed expense rolls
+ *  the purchase back (never a partial write), and the DB backstops are
+ *  uq_fuel_log_operation_request on (operation_id, client_request_id) for the
+ *  record plus expenses_source_once_uniq for exactly-once expenses. */
 export async function logFuelCore(
   db: ReturnType<typeof sql>,
   operationId: number,
@@ -302,30 +341,41 @@ export async function logFuelCore(
   return await db.begin(async (tx) => {
     // Idempotency first (restock precedent, feed.ts 463–473): the SAME
     // client_request_id for this operation returns the original row WITHOUT
-    // re-applying anything — no second fill-up, no second expense.
-    const prior = await tx<[{ id: number; cost_cents: number | null }]>`
-      SELECT id, cost_cents FROM fuel_log
-      WHERE client_request_id = ${f.client_request_id} AND operation_id = ${operationId}`;
+    // re-applying anything — no second record, no second expense (either kind).
+    const prior = await tx<[{ id: number; cost_cents: number | null; record_kind: FuelRecordKind }]>`
+      SELECT id, cost_cents, record_kind FROM fuel_log
+      WHERE client_request_id = ${f.client_request_id ?? ""} AND operation_id = ${operationId}`;
     if (prior.length > 0) {
+      const priorRow = prior[0];
       return {
         ok: true,
-        id: prior[0].id,
-        expense_created: prior[0].cost_cents !== null && prior[0].cost_cents > 0,
+        id: priorRow.id,
+        expense_created:
+          priorRow.record_kind !== "draw" &&
+          priorRow.cost_cents !== null &&
+          priorRow.cost_cents > 0,
         duplicate: true,
+        record_kind: priorRow.record_kind,
       };
     }
     // Scope through the equipment: the machine must belong to this operation,
     // or the INSERT ... SELECT affects 0 rows (cross-ranch mutation rejected).
-    // A NULL equipment_id is allowed (bulk tank top-up).
+    // A NULL equipment_id is allowed (bulk tank top-up / station fill).
+    // A missing record_kind ("legacy client") is a purchase — the single-path
+    // branch expensed every fill-up, so that default keeps the money rule.
     const [row] = await tx<[{ id: number }]>`
-      INSERT INTO fuel_log (operation_id, equipment_id, fuel_date, fuel_type, gallons, cost_cents, location, notes, client_request_id)
+      INSERT INTO fuel_log (operation_id, equipment_id, fuel_date, fuel_type, gallons, cost_cents, location, notes, client_request_id, record_kind)
       SELECT ${operationId}, CASE WHEN ${f.equipment_id}::int IS NULL THEN NULL ELSE ${f.equipment_id}::int END,
-             ${f.fuel_date}, ${f.fuel_type}, ${f.gallons}, ${f.cost_cents}, ${f.location}, ${f.notes}, ${f.client_request_id}
+             ${f.fuel_date}, ${f.fuel_type}, ${f.gallons}, ${f.cost_cents}, ${f.location}, ${f.notes}, ${f.client_request_id}, ${f.record_kind ?? "purchase"}
       WHERE ${f.equipment_id}::int IS NULL
          OR EXISTS (SELECT 1 FROM equipment e WHERE e.id = ${f.equipment_id}::int AND e.operation_id = ${operationId})
       RETURNING id`;
     if (!row) return { ok: false, error: "That equipment doesn't exist in this ranch." };
-    const wantsExpense = f.create_expense && f.cost_cents !== null && f.cost_cents > 0;
+    // THE RULE: a purchase expenses exactly once (when a cost is present and
+    // the linked-expense choice is on); a draw NEVER creates an expense, even
+    // with a cost recorded on the log for economics.
+    const wantsExpense =
+      f.record_kind !== "draw" && f.create_expense && f.cost_cents !== null && f.cost_cents > 0;
     if (wantsExpense) {
       // The ledger row carries exactly what the operator typed (Phase 3 polish,
       // verifier finding: fuel-linked expenses were created with an empty
@@ -345,7 +395,7 @@ export async function logFuelCore(
         equipment_id: f.equipment_id,
       });
     }
-    return { ok: true, id: row.id, expense_created: wantsExpense, duplicate: false };
+    return { ok: true, id: row.id, expense_created: wantsExpense, duplicate: false, record_kind: f.record_kind };
   });
 }
 
@@ -480,6 +530,14 @@ export type FuelEditInput = {
   notes: string | null;
   meter_hours: number | null;
   meter_miles: number | null;
+  /** Optional two-path guard: when a client sends a record_kind that differs
+   *  from the stored row's kind, the edit is REFUSED (never silently
+   *  converted). The built-in UI never sends it — a draw stays a draw and a
+   *  purchase stays a purchase; converting between the two paths is a void +
+   *  re-record, because the two kinds have different money semantics (a
+   *  purchase carries exactly one linked expense, a draw carries none, and
+   *  "converting" would mean inventing or deleting money after the fact). */
+  record_kind?: FuelRecordKind;
 };
 
 /** The edit cost rule (restock precedent): negative refused; ""/null/0 →
@@ -510,12 +568,13 @@ export function parseFuelEditInput(raw: unknown): FuelEditInput {
     notes: str(d.notes),
     meter_hours: nonNegativeNum(d.meter_hours, "Meter hours"),
     meter_miles: nonNegativeNum(d.meter_miles, "Meter miles"),
+    record_kind: oneOf(d.record_kind, FUEL_RECORD_KINDS) ?? undefined,
   };
 }
 
 export const updateFuel = createServerFn({ method: "POST" })
   .validator(parseFuelEditInput)
-  .handler(async ({ data: r }): Promise<{ ok: true; id: number; expense_linked: boolean } | { ok: false; error: string }> => {
+  .handler(async ({ data: r }): Promise<{ ok: true; id: number; expense_linked: boolean; record_kind: FuelRecordKind } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) {
       console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
       return { ok: false, error: "We couldn't complete that right now. Please try again." };
@@ -530,25 +589,47 @@ export const updateFuel = createServerFn({ method: "POST" })
 
 /** Injectable fuel-edit core — one transaction: lock the row (operation-scoped,
  *  so another ranch's id is invisible here), update the editable fields, then
- *  let the linked expense follow the source. */
+ *  let the money follow the KIND (the owner's two-path rule):
+ *    • purchase → the linked expense FOLLOWS the source (same row updated, or
+ *      inserted for a legacy record with none; deleted when the cost goes).
+ *    • draw     → the log row only. A draw never has (and never gains) an
+ *      expense — its money was expensed once, at purchase time.
+ *  A client-requested kind change is refused, never silently converted. */
 export async function updateFuelCore(
   db: ReturnType<typeof sql>,
   operationId: number,
   r: FuelEditInput
-): Promise<{ ok: true; id: number; expense_linked: boolean } | { ok: false; error: string }> {
+): Promise<{ ok: true; id: number; expense_linked: boolean; record_kind: FuelRecordKind } | { ok: false; error: string }> {
   // Link-column discovery happens ONCE per process, outside the transaction
   // (audit defect D2 pattern): on a database missing the 0018 link columns an
-  // edit must not fail on a SELECT of a column that isn't there.
+  // edit must not fail on a SELECT of a column that isn't there. Same for
+  // record_kind (0022): an un-migrated database is treated as all-purchase.
   const linkCols = await loadExpenseLinkColumns(db);
+  const fuelKindCol = await loadFuelRecordKindColumn(db);
   return await db.begin(async (tx) => {
-    const [row] = await tx<[{ equipment_id: number | null }]>`
-      SELECT equipment_id FROM fuel_log WHERE id=${r.id} AND operation_id=${operationId} FOR UPDATE`;
+    const [row] = await tx<[{ equipment_id: number | null; record_kind: FuelRecordKind }]>`
+      SELECT equipment_id, ${fuelKindCol ? tx`record_kind` : tx`'purchase'::text AS record_kind`}
+      FROM fuel_log WHERE id=${r.id} AND operation_id=${operationId} FOR UPDATE`;
     if (!row) return { ok: false, error: "That fill-up no longer exists in this ranch." };
+    if (r.record_kind !== undefined && r.record_kind !== row.record_kind) {
+      return {
+        ok: false,
+        error:
+          row.record_kind === "draw"
+            ? "This is a bulk-tank draw (usage only). It can't be edited into a fuel purchase — void it and record the purchase instead."
+            : "This is a fuel purchase with its own linked expense. It can't be edited into a bulk-tank draw — void it and record the draw instead.",
+      };
+    }
     await tx`
       UPDATE fuel_log SET fuel_date=${r.fuel_date}, fuel_type=${r.fuel_type}, gallons=${r.gallons},
         cost_cents=${r.cost_cents}, location=${r.location}, notes=${r.notes},
         meter_hours=${r.meter_hours}, meter_miles=${r.meter_miles}
       WHERE id=${r.id} AND operation_id=${operationId}`;
+    // A DRAW's edit updates the log only: no expense exists to sync, and none
+    // may be invented — even when the draw's economics cost is set.
+    if (row.record_kind === "draw") {
+      return { ok: true, id: r.id, expense_linked: false, record_kind: "draw" };
+    }
     const expense_linked = await syncLinkedExpenseOnEdit(tx, operationId, {
       linkCols,
       sourceType: "fuel_log",
@@ -570,7 +651,7 @@ export async function updateFuelCore(
       missingColumnsMessage: "We couldn't update that fill-up right now. Please try again.",
       logLabel: "updateFuel",
     });
-    return { ok: true, id: r.id, expense_linked };
+    return { ok: true, id: r.id, expense_linked, record_kind: row.record_kind };
   });
 }
 
@@ -681,7 +762,7 @@ export const deleteFuel = createServerFn({ method: "POST" })
     if (!Number.isInteger(id) || id <= 0) throw new Error("Pick the fill-up to void.");
     return id;
   })
-  .handler(async ({ data: id }): Promise<{ ok: true; linked_expense_removed: boolean } | { ok: false; error: string }> => {
+  .handler(async ({ data: id }): Promise<{ ok: true; linked_expense_removed: boolean; record_kind: FuelRecordKind } | { ok: false; error: string }> => {
     if (!isDatabaseConfigured()) {
       console.error("DATABASE_URL is not set — cannot run this operation (database not configured).");
       return { ok: false, error: "We couldn't complete that right now. Please try again." };
@@ -694,25 +775,33 @@ export const deleteFuel = createServerFn({ method: "POST" })
     }
   });
 
-/** Injectable fuel-void core — one transaction: the linked expense (if any) is
- *  deleted first, then the record. Nothing partial survives either failure. */
+/** Injectable fuel-void core — one transaction, per kind (the owner's two-path
+ *  rule): a PURCHASE removes the linked expense AND the record together; a
+ *  DRAW removes the usage log only (draws never created an expense, so there
+ *  is nothing to reverse — the money stays expensed once, at purchase time).
+ *  Nothing partial survives either failure. */
 export async function deleteFuelCore(
   db: ReturnType<typeof sql>,
   operationId: number,
   id: number
-): Promise<{ ok: true; linked_expense_removed: boolean } | { ok: false; error: string }> {
+): Promise<{ ok: true; linked_expense_removed: boolean; record_kind: FuelRecordKind } | { ok: false; error: string }> {
   const linkCols = await loadExpenseLinkColumns(db);
+  const fuelKindCol = await loadFuelRecordKindColumn(db);
   return await db.begin(async (tx) => {
-    const [row] = await tx<[{ id: number }]>`
-      SELECT id FROM fuel_log WHERE id=${id} AND operation_id=${operationId} FOR UPDATE`;
+    const [row] = await tx<[{ id: number; record_kind: FuelRecordKind }]>`
+      SELECT id, ${fuelKindCol ? tx`record_kind` : tx`'purchase'::text AS record_kind`}
+      FROM fuel_log WHERE id=${id} AND operation_id=${operationId} FOR UPDATE`;
     if (!row) return { ok: false, error: "That fill-up no longer exists in this ranch." };
-    const linked_expense_removed = await removeLinkedExpense(tx, operationId, {
-      linkCols,
-      sourceType: "fuel_log",
-      sourceId: id,
-    });
+    let linked_expense_removed = false;
+    if (row.record_kind !== "draw") {
+      linked_expense_removed = await removeLinkedExpense(tx, operationId, {
+        linkCols,
+        sourceType: "fuel_log",
+        sourceId: id,
+      });
+    }
     await tx`DELETE FROM fuel_log WHERE id=${id} AND operation_id=${operationId}`;
-    return { ok: true, linked_expense_removed };
+    return { ok: true, linked_expense_removed, record_kind: row.record_kind };
   });
 }
 

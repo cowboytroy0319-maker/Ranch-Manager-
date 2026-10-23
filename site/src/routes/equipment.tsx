@@ -107,13 +107,16 @@ function EquipmentPage() {
 
   const fuel = useMemo(() => {
     const gallons = data.fuel.reduce((s, f) => s + f.gallons, 0);
-    const cost = data.fuel.reduce((s, f) => s + (f.cost_cents ?? 0), 0);
+    // The two-path money rule (0022): only PURCHASES carry spend — a draw's
+    // cost, when recorded for economics, is not money (its tank was expensed
+    // when bought), so it stays out of the dollar totals. Gallons stay usage.
+    const cost = data.fuel.reduce((s, f) => s + (f.record_kind === "draw" ? 0 : f.cost_cents ?? 0), 0);
     const byMachine = new Map<string, { gallons: number; cost: number; fills: number }>();
     for (const f of data.fuel) {
       const key = f.equipment_name ?? "Unassigned / bulk";
       const cur = byMachine.get(key) ?? { gallons: 0, cost: 0, fills: 0 };
       cur.gallons += f.gallons;
-      cur.cost += f.cost_cents ?? 0;
+      cur.cost += f.record_kind === "draw" ? 0 : f.cost_cents ?? 0;
       cur.fills += 1;
       byMachine.set(key, cur);
     }
@@ -350,6 +353,11 @@ function EquipmentPage() {
                       <td className="py-2.5 pr-3">
                         <span className="font-medium text-stone-800">{f.equipment_name ?? "Unassigned"}</span>
                         <span className="ml-1.5 text-xs text-stone-400">{f.fuel_type}</span>
+                        {f.record_kind === "draw" && (
+                          <span data-testid={`fuel-kind-${f.id}`} className="ml-1.5 rounded bg-stone-200 px-1.5 py-0.5 text-xs font-semibold text-stone-600">
+                            tank draw
+                          </span>
+                        )}
                       </td>
                       <td className="whitespace-nowrap py-2.5 pr-3 text-stone-700">
                         {f.gallons.toLocaleString(undefined, { maximumFractionDigits: 1 })} gal
@@ -358,7 +366,13 @@ function EquipmentPage() {
                       <td className="py-2.5 pr-3 text-stone-600">{f.location ?? "—"}</td>
                       <td className="py-2.5 text-right">
                         <span className="mr-1.5 text-xs text-stone-500" data-testid={`fuel-linked-${f.id}`}>
-                          {f.expense_id != null ? "↳ in Expenses" : f.cost_cents ? "record only" : ""}
+                          {f.record_kind === "draw"
+                            ? "draw · no expense"
+                            : f.expense_id != null
+                              ? "↳ in Expenses"
+                              : f.cost_cents
+                                ? "record only"
+                                : ""}
                         </span>
                         <button
                           onClick={() => setEditingFuel(f)}

@@ -113,3 +113,59 @@ export const resetExpenseLinkColumnsCache = (): void => {
   cache = null;
   warned = false;
 };
+
+// ---------------------------------------------------------------------------
+// The fuel_log record_kind column (0022, the owner's two-path fuel model).
+// Same defensive pattern as the link columns above: the discriminator that
+// separates a fuel PURCHASE (one linked expense) from a bulk-tank DRAW (usage
+// only, never an expense) arrives ONLY with `0022_fuel_two_path.sql`, so every
+// read that filters on it probes for the column first and degrades instead of
+// taking the equipment page or the dashboard down on an un-migrated database.
+// ---------------------------------------------------------------------------
+
+/** The migration that adds fuel_log.record_kind — named in logs so the fix is obvious. */
+export const FUEL_RECORD_KIND_MIGRATION = "0022_fuel_two_path.sql";
+
+let fuelKindCache: boolean | null = null;
+let fuelKindWarned = false;
+
+/** True when fuel_log.record_kind exists on the resolved fuel_log table.
+ *  Resolution follows the connection's search_path via to_regclass, exactly
+ *  like loadExpenseLinkColumns. On discovery failure it returns true (assume
+ *  present — 0022 ships with this code and every deploy runs db:migrate; a
+ *  degraded page is the caller's job, and schemaCheck names the gap). */
+export const loadFuelRecordKindColumn = async (
+  db: ColumnQueryDb
+): Promise<boolean> => {
+  if (fuelKindCache !== null) return fuelKindCache;
+  let present = false;
+  try {
+    const rows = await db<{ attname: string }[]>`
+      SELECT a.attname
+      FROM pg_attribute a
+      WHERE a.attrelid = to_regclass('fuel_log')
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+        AND a.attname = 'record_kind'`;
+    present = rows.length > 0;
+  } catch {
+    // Discovery itself must never be the thing that breaks a page.
+    return true;
+  }
+  fuelKindCache = present;
+  if (!present && !fuelKindWarned) {
+    fuelKindWarned = true;
+    console.warn(
+      `[fuel] record_kind column missing — fuel reads run WITHOUT the two-path split (every row counts as a purchase). ` +
+        `This is a SCHEMA fault, not a transient one: apply migration ${FUEL_RECORD_KIND_MIGRATION} ` +
+        `(check with \`bun run db:check-schema\`).`
+    );
+  }
+  return present;
+};
+
+/** Forget the cached fuel-kind discovery (tests, and after applying a migration in-process). */
+export const resetFuelRecordKindColumnCache = (): void => {
+  fuelKindCache = null;
+  fuelKindWarned = false;
+};

@@ -28,6 +28,13 @@ import { useDraftPersistence } from "~/components/drafts";
 import {
   FUEL_COST_HELPER_TEXT,
   FUEL_COST_MISSING_ERROR,
+  FUEL_DRAW_CHOICE_LABEL,
+  FUEL_DRAW_CHOICE_SUB,
+  FUEL_DRAW_COST_HELPER_TEXT,
+  FUEL_DRAW_EDIT_NOTE,
+  FUEL_PURCHASE_CHOICE_LABEL,
+  FUEL_PURCHASE_CHOICE_SUB,
+  FUEL_PURCHASE_EDIT_NOTE,
   FUEL_RECORD_ONLY_LABEL,
   SERVICE_COST_HELPER_TEXT,
   SERVICE_COST_MISSING_ERROR,
@@ -52,6 +59,7 @@ import {
   validateTrackingMoney,
 } from "~/components/equipment/trackingUI";
 import { FUEL_TYPES, MAINT_TYPES, fuelTotalCents, type EquipmentItem, type FuelEntry, type MaintenanceRecord } from "~/types/equipment";
+import type { FuelRecordKind } from "~/server/equipment";
 import { ErrorNote, Modal } from "~/components/sheet-modal";
 
 export { fuelTotalCents } from "~/types/equipment";
@@ -162,6 +170,49 @@ function LinkedExpenseChoice({
   );
 }
 
+/** The owner's two-path fuel choice (2026-10-20), the same two-button shape as
+ *  the linked-expense selector: a PURCHASE is money leaving (pump or bulk-tank
+ *  delivery → exactly one linked expense, the default) vs a DRAW from a tank
+ *  that was already bought (usage only, never a second expense). */
+function FuelKindChoice({
+  kind,
+  onPick,
+}: {
+  kind: FuelRecordKind;
+  onPick: (k: FuelRecordKind) => void;
+}) {
+  return (
+    <Field label="What kind of fuel entry is this?">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" role="group" aria-label="Fuel entry kind">
+        <button
+          type="button"
+          data-testid="fuel-kind-purchase"
+          aria-pressed={kind === "purchase"}
+          onClick={() => onPick("purchase")}
+          className={`min-h-11 rounded-lg border px-3 py-2.5 text-left text-sm font-semibold transition ${kind === "purchase" ? "border-green-700 bg-green-800 text-white" : "border-stone-300 bg-white text-stone-700"}`}
+        >
+          {FUEL_PURCHASE_CHOICE_LABEL}
+          <span className={`block text-xs font-normal ${kind === "purchase" ? "text-green-100" : "text-stone-500"}`}>
+            {FUEL_PURCHASE_CHOICE_SUB}
+          </span>
+        </button>
+        <button
+          type="button"
+          data-testid="fuel-kind-draw"
+          aria-pressed={kind === "draw"}
+          onClick={() => onPick("draw")}
+          className={`min-h-11 rounded-lg border px-3 py-2.5 text-left text-sm font-semibold transition ${kind === "draw" ? "border-stone-700 bg-stone-800 text-white" : "border-stone-300 bg-white text-stone-700"}`}
+        >
+          {FUEL_DRAW_CHOICE_LABEL}
+          <span className={`block text-xs font-normal ${kind === "draw" ? "text-stone-300" : "text-stone-500"}`}>
+            {FUEL_DRAW_CHOICE_SUB}
+          </span>
+        </button>
+      </div>
+    </Field>
+  );
+}
+
 /** The restock-style footer: Cancel + the money-tracking submit, disabled from
  *  the first click until the request settles (the S3/S4 UI-side fix). */
 function TrackingFooter({
@@ -256,6 +307,10 @@ export function LogFuelModal({
   const [form, setForm] = useState<FuelLogDraft>(emptyFuelDraft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The owner's two-path model: every entry is a PURCHASE (default — money
+  // leaving, one linked expense) or a DRAW from an already-purchased tank
+  // (usage only, never an expense).
+  const [kind, setKind] = useState<FuelRecordKind>("purchase");
   // ON BY DEFAULT: a cost is expected to become an expense unless the operator
   // explicitly says otherwise (the restock default, FeedModals.tsx 567).
   const [addExpense, setAddExpense] = useState(true);
@@ -268,9 +323,18 @@ export function LogFuelModal({
   // placeholder + helper), so the existing no-typing flow keeps working.
   const computedCents = useMemo(() => computedFuelCents(form.gallons, form.pricePerGal), [form.gallons, form.pricePerGal]);
   const effectiveCents = parseCostToCents(form.totalCost) ?? computedCents;
-  const submitLabel = fuelSubmitLabel(effectiveCents, addExpense);
+  const submitLabel = fuelSubmitLabel(effectiveCents, addExpense, kind);
 
   const set = <K extends keyof FuelLogDraft>(k: K, v: FuelLogDraft[K]) => setForm((f) => ({ ...f, [k]: v }));
+
+  // Kind switch: purchase is the expensed path, so returning to it re-derives
+  // the linked-expense choice from the money currently on the form (the same
+  // rule the cost handlers below apply). Switching to a draw makes the choice
+  // irrelevant — a draw never expenses.
+  const onPickKind = (k: FuelRecordKind) => {
+    setKind(k);
+    if (k === "purchase") setAddExpense(effectiveCents !== null);
+  };
 
   // Cost typed → the explicit rule (restock onCostChange): blank or invalid
   // cost flips the choice to record-only; a cost flips it back on.
@@ -291,7 +355,10 @@ export function LogFuelModal({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (addExpense && effectiveCents === null) {
+    // A PURCHASE with the expense choice on needs its money (the S7 rule: the
+    // app asks instead of inventing a $0 ledger row). A DRAW needs no money —
+    // usage alone is a valid record.
+    if (kind === "purchase" && addExpense && effectiveCents === null) {
       setError(FUEL_COST_MISSING_ERROR);
       return;
     }
@@ -308,7 +375,7 @@ export function LogFuelModal({
         location: form.location.trim() || null,
         notes: form.notes.trim() || null,
       },
-      { clientRequestId: requestId, addExpense, costCents: effectiveCents }
+      { clientRequestId: requestId, addExpense, costCents: effectiveCents, kind }
     );
     const res = await logFuel({ data: payload });
     if (res.ok) {
@@ -323,7 +390,7 @@ export function LogFuelModal({
   return (
     <Modal
       title="Log fuel"
-      sub="A fill-up at the pump or tank — with a cost, it also records the linked expense"
+      sub="A purchase (pump or bulk-tank delivery) adds one linked expense · a draw from a tank already bought records usage only"
       onClose={onClose}
       footer={
         <TrackingFooter
@@ -342,6 +409,7 @@ export function LogFuelModal({
         <Field label="Date *">
           <input type="date" className={inputCls} value={form.fuel_date} onChange={(e) => set("fuel_date", e.target.value)} required />
         </Field>
+        <FuelKindChoice kind={kind} onPick={onPickKind} />
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Gallons *">
             <input
@@ -364,7 +432,7 @@ export function LogFuelModal({
               placeholder="3.79"
             />
           </Field>
-          <Field label="Total cost paid" className="sm:col-span-2">
+          <Field label={kind === "draw" ? "Cost of fuel drawn (records only)" : "Total cost paid"} className="sm:col-span-2">
             <input
               type="number" min={0} step={0.01} inputMode="decimal"
               className={inputCls}
@@ -372,21 +440,28 @@ export function LogFuelModal({
               aria-describedby="fuel-cost-helper"
               value={form.totalCost}
               onChange={(e) => onCostChange(e.target.value)}
-              placeholder={computedCents !== null ? `≈ $${(computedCents / 100).toFixed(2)} auto-computed` : "96.00"}
+              placeholder={computedCents !== null ? "≈ $" + (computedCents / 100).toFixed(2) + " auto-computed" : "96.00"}
             />
             <p id="fuel-cost-helper" data-testid="fuel-cost-helper" className="mt-1 text-xs text-stone-500">
-              {FUEL_COST_HELPER_TEXT}
-              {computedCents !== null && form.totalCost === "" ? ` ≈ $${(computedCents / 100).toFixed(2)} from gallons × price/gal.` : ""}
+              {kind === "draw" ? FUEL_DRAW_COST_HELPER_TEXT : FUEL_COST_HELPER_TEXT}
+              {kind === "purchase" && computedCents !== null && form.totalCost === "" ? " ≈ $" + (computedCents / 100).toFixed(2) + " from gallons × price/gal." : ""}
             </p>
           </Field>
         </div>
-        <LinkedExpenseChoice
-          addExpense={addExpense}
-          onAdd={() => setAddExpense(true)}
-          onRecordOnly={() => setAddExpense(false)}
-          recordOnlyLabel={FUEL_RECORD_ONLY_LABEL}
-          testPrefix="fuel"
-        />
+        {kind === "purchase" ? (
+          <LinkedExpenseChoice
+            addExpense={addExpense}
+            onAdd={() => setAddExpense(true)}
+            onRecordOnly={() => setAddExpense(false)}
+            recordOnlyLabel={FUEL_RECORD_ONLY_LABEL}
+            testPrefix="fuel"
+          />
+        ) : (
+          <p data-testid="fuel-draw-note" className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm text-stone-600">
+            No expense will be created — this fuel was already expensed when the tank was bought. The cost above is
+            recorded for economics only.
+          </p>
+        )}
         <Field label="Fuel type">
           <select className={inputCls} value={form.fuel_type} onChange={(e) => set("fuel_type", e.target.value)}>
             {FUEL_TYPES.map((t) => (
@@ -741,7 +816,10 @@ export function ServiceEditModal({
 }
 
 // ---------------------------------------------------------------------------
-// Edit an EXISTING fill-up: same contract as the service edit.
+// Edit an EXISTING fuel record: same contract as the service edit for a
+// PURCHASE (the SAME linked expense follows the correction). A DRAW edits the
+// usage log only — no expense exists to sync and none may be invented. The
+// kind is preserved; converting between the paths is a void + re-record.
 // ---------------------------------------------------------------------------
 
 export function FuelEditModal({
@@ -753,6 +831,7 @@ export function FuelEditModal({
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
+  const kind: FuelRecordKind = record.record_kind === "draw" ? "draw" : "purchase";
   const [fuelDate, setFuelDate] = useState(record.fuel_date);
   const [fuelType, setFuelType] = useState<string>(record.fuel_type);
   const [gallons, setGallons] = useState(String(record.gallons));
@@ -796,14 +875,14 @@ export function FuelEditModal({
       ),
     });
     setSaving(false);
-    if (res.ok) onSaved(fuelEditedMessage(res.expense_linked));
+    if (res.ok) onSaved(fuelEditedMessage(res.expense_linked, kind));
     else setError(res.error);
   };
 
   return (
     <Modal
       title={`Edit fill-up #${record.id}`}
-      sub="Correcting this updates the same linked expense"
+      sub={kind === "draw" ? "Usage only — editing never creates an expense" : "Correcting this updates the same linked expense"}
       onClose={onClose}
       footer={
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
@@ -818,6 +897,9 @@ export function FuelEditModal({
     >
       <form id="fuel-edit-form" data-testid="fuel-edit-form" onSubmit={submit} className="space-y-4" noValidate>
         {error && <ErrorNote error={error} />}
+        <p data-testid="fuel-edit-kind-note" className={`rounded-lg border px-3 py-2.5 text-sm ${kind === "draw" ? "border-stone-200 bg-stone-50 text-stone-600" : "border-green-200 bg-green-50 text-green-900"}`}>
+          {kind === "draw" ? FUEL_DRAW_EDIT_NOTE : FUEL_PURCHASE_EDIT_NOTE}
+        </p>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Fuel date *">
             <input type="date" className={inputCls} data-testid="fuel-edit-date" value={fuelDate} onChange={(e) => setFuelDate(e.target.value)} required />
@@ -840,7 +922,7 @@ export function FuelEditModal({
               required
             />
           </Field>
-          <Field label="Total cost paid">
+          <Field label={kind === "draw" ? "Cost of fuel drawn (records only)" : "Total cost paid"}>
             <input
               type="number" min={0} step={0.01} inputMode="decimal"
               className={inputCls}
@@ -850,7 +932,7 @@ export function FuelEditModal({
               onChange={(e) => setCostDollars(e.target.value)}
               placeholder="0.00"
             />
-            <p id="fuel-edit-cost-helper" className="mt-1 text-xs text-stone-500">{FUEL_COST_HELPER_TEXT}</p>
+            <p id="fuel-edit-cost-helper" className="mt-1 text-xs text-stone-500">{kind === "draw" ? FUEL_DRAW_COST_HELPER_TEXT : FUEL_COST_HELPER_TEXT}</p>
           </Field>
           <Field label="Odometer / meter — miles">
             <input type="number" min={0} step={1} inputMode="numeric" className={inputCls} value={meterMiles} onChange={(e) => setMeterMiles(e.target.value)} />
@@ -935,6 +1017,7 @@ export function VoidFuelModal({
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const kind: FuelRecordKind = record.record_kind === "draw" ? "draw" : "purchase";
   const linked = record.expense_id != null;
 
   const confirm = async () => {
@@ -942,14 +1025,14 @@ export function VoidFuelModal({
     setError(null);
     const res = await deleteFuel({ data: record.id });
     setSaving(false);
-    if (res.ok) onVoided(fuelVoidedMessage(res.linked_expense_removed));
+    if (res.ok) onVoided(fuelVoidedMessage(res.linked_expense_removed, kind));
     else setError(res.error);
   };
 
   return (
     <Modal
-      title="Void this fill-up?"
-      sub={`Record #${record.id} — ${record.gallons} gal on ${record.fuel_date}`}
+      title={kind === "draw" ? "Void this fuel usage record?" : "Void this fuel purchase?"}
+      sub={`Record #${record.id} — ${record.gallons} gal on ${record.fuel_date}${kind === "draw" ? " · bulk-tank draw" : ""}`}
       onClose={onClose}
       footer={
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
@@ -957,14 +1040,14 @@ export function VoidFuelModal({
             Cancel
           </button>
           <button type="button" onClick={confirm} data-testid="fuel-void-confirm" disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-red-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-red-800 disabled:opacity-60 sm:w-auto sm:px-5">
-            {saving ? "Voiding…" : "Void fill-up"}
+            {saving ? "Voiding…" : kind === "draw" ? "Void usage record" : "Void fuel purchase"}
           </button>
         </div>
       }
     >
       {error && <ErrorNote error={error} />}
       <ul className="space-y-1.5 text-sm text-stone-700">
-        {fuelVoidConfirmLines(linked, record.expense_amount_cents ?? record.cost_cents).map((line) => (
+        {fuelVoidConfirmLines(linked, record.expense_amount_cents ?? record.cost_cents, kind).map((line) => (
           <li key={line}>• {line}</li>
         ))}
       </ul>

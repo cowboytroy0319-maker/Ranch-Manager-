@@ -95,6 +95,11 @@ export type FuelEntry = {
   meter_miles: number | null;
   location: string | null;
   notes: string | null;
+  /** The owner's two-path fuel model (0022): a PURCHASE carries money (one
+   *  linked expense when a cost is present); a DRAW from an already-purchased
+   *  bulk tank is usage only and never an expense. Rows read from a database
+   *  without 0022 are legacy purchases. */
+  record_kind?: "purchase" | "draw";
   /** Same linked-ledger fields as MaintenanceRecord (audit Phase 2). */
   expense_id?: number | null;
   expense_amount_cents?: number | null;

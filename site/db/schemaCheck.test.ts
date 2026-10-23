@@ -158,7 +158,7 @@ describe("a correct database passes the gate", () => {
   test("the CLI exits 0 and prints OK", () => {
     const run = runGateCli(GATE_DB);
     expect(run.status).toBe(0);
-    expect(run.stdout).toContain("OK — 21 migrations applied, 14 required objects present.");
+    expect(run.stdout).toContain("OK — 22 migrations applied, 16 required objects present.");
   });
 });
 
