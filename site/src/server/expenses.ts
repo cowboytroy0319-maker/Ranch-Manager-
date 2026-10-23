@@ -1,10 +1,13 @@
 // ============================================================================
 // Ranch Manager Pro — Expenses server function (the only place that talks to
 // the database for expense data). Reads the cost ledger the CostsSnapshot +
-// /expenses route render. Fuel is intentionally NOT read here — it stays
-// sourced from `fuel_log` via getCostData so nothing is double-counted.
-// Maintenance spend is read from expenses.category='repairs_maintenance' (the
-// ledger), NOT from maintenance_records, so the dashboard shows one figure.
+// /expenses route render. Every category in the ledger is read here, including
+// the linked fuel rows (source_type='fuel_log'); getCostData (costs.ts) reads
+// the LEDGER first for its fuel stat (audit D2) so the headline and this
+// ledger never disagree, falling back to fuel_log when the link columns or
+// rows are absent. Maintenance spend is read from
+// expenses.category='repairs_maintenance' (the ledger), NOT from
+// maintenance_records, so the dashboard shows one figure.
 //
 // Linked expenses (source_type = 'restock' | 'pasture_activity') are created
 // ONLY by the feed/pasture server fns — the expenses module never fabricates
@@ -14,8 +17,13 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireAuth } from "./authServer";
 import { isDatabaseConfigured, sql } from "~/db";
+import { expenseLinkSelectColumns, loadExpenseLinkColumns } from "~/expenseSchema";
 import type { DimensionTotal, ExpenseData, ExpenseFilter, ExpenseRow } from "~/types/expenses";
-import { EXPENSE_CATEGORIES, type ExpenseCategory } from "~/types/expenses";
+import {
+  EXPENSE_CATEGORIES,
+  canonicalExpenseCategory,
+  type ExpenseCategory,
+} from "~/types/expenses";
 
 // Default scope: the month the DB clock says it currently is, so the dashboard
 // always shows this month. Optional {from, to} bounds (YYYY-MM-DD) + category
@@ -41,6 +49,57 @@ export function parseExpenseFilters(raw: unknown): ExpenseFilter {
       ? (d.category as ExpenseCategory)
       : null;
   return { from, to, category };
+}
+
+// ---------------------------------------------------------------------------
+// The ledger's ROW read, built defensively (audit defect D2).
+//
+// The three link columns (`paid_by`, `source_type`, `source_id`) arrive only
+// with migration 0018_product_blocker.sql. Selecting them unconditionally meant
+// ONE absent column failed the WHOLE Expenses page. This helper asks the
+// database which of them exist and selects a typed NULL for the ones that do
+// not: manual expenses keep rendering, and a linked row simply reads as
+// unlinked. It never fabricates a link and never hides a query error — only the
+// column list adapts. Exported so the degradation can be tested against a
+// genuinely column-less `expenses` table (via search_path).
+// ---------------------------------------------------------------------------
+export async function loadExpenseRows(
+  db: ReturnType<typeof sql>,
+  operationId: number,
+  filter: ExpenseFilter,
+  linkCols?: Awaited<ReturnType<typeof loadExpenseLinkColumns>>
+): Promise<ExpenseRow[]> {
+  const cols = linkCols ?? (await loadExpenseLinkColumns(db));
+  const selected = expenseLinkSelectColumns(cols);
+  const paidBy = selected.paidBy ? db(selected.paidBy) : db.unsafe("NULL::text");
+  const sourceType = selected.sourceType ? db(selected.sourceType) : db.unsafe("NULL::text");
+  const sourceId = selected.sourceId ? db(selected.sourceId) : db.unsafe("NULL::int");
+  const linked = cols.sourceType
+    ? db.unsafe("(e.source_type IS NOT NULL)")
+    : db.unsafe("false");
+  const hasRange = Boolean(filter.from || filter.to);
+  const scopeFragE = () =>
+    hasRange
+      ? db`
+          ${filter.from ? db`AND e.expense_date >= ${filter.from}` : db``}
+          ${filter.to ? db`AND e.expense_date <= ${filter.to}` : db``}`
+      : db`AND e.expense_date >= date_trunc('month', now())::date`;
+  const catFragE = () => (filter.category ? db`AND e.category = ${filter.category}` : db``);
+  return await db<ExpenseRow[]>`
+    SELECT e.id, e.expense_date::text AS expense_date, e.category, e.amount_cents,
+           e.vendor, ${paidBy} AS paid_by, ${sourceType} AS source_type, ${sourceId} AS source_id,
+           ${linked} AS linked,
+           e.herd_group_id, hg.name AS herd_group_name, hg.species,
+           e.pasture_id, p.name AS pasture_name, e.equipment_id, eq.name AS equipment_name,
+           e.job, e.notes
+    FROM expenses e
+    LEFT JOIN herd_groups hg ON hg.id = e.herd_group_id
+    LEFT JOIN pastures p ON p.id = e.pasture_id
+    LEFT JOIN equipment eq ON eq.id = e.equipment_id
+    WHERE e.operation_id = ${operationId}
+    ${scopeFragE()}
+    ${catFragE()}
+    ORDER BY e.expense_date, e.id`;
 }
 
 export const getExpensesData = createServerFn()
@@ -88,22 +147,12 @@ export const getExpensesData = createServerFn()
           : db`AND e.expense_date >= date_trunc('month', now())::date`;
       const catFragE = () => (filter.category ? db`AND e.category = ${filter.category}` : db``);
 
+      // Link-column discovery happens ONCE per process (cached in expenseSchema)
+      // and the row read degrades instead of failing when 0018 is unapplied.
+      const linkCols = await loadExpenseLinkColumns(db);
+
       const [rows, cat, herd, pasture, equipment, job, grand] = await Promise.all([
-        db<ExpenseRow[]>`
-          SELECT e.id, e.expense_date::text AS expense_date, e.category, e.amount_cents,
-                 e.vendor, e.paid_by, e.source_type, e.source_id,
-                 (e.source_type IS NOT NULL) AS linked,
-                 e.herd_group_id, hg.name AS herd_group_name, hg.species,
-                 e.pasture_id, p.name AS pasture_name, e.equipment_id, eq.name AS equipment_name,
-                 e.job, e.notes
-          FROM expenses e
-          LEFT JOIN herd_groups hg ON hg.id = e.herd_group_id
-          LEFT JOIN pastures p ON p.id = e.pasture_id
-          LEFT JOIN equipment eq ON eq.id = e.equipment_id
-          WHERE e.operation_id = ${operationId}
-          ${scopeFragE()}
-          ${catFragE()}
-          ORDER BY e.expense_date, e.id`,
+        loadExpenseRows(db, operationId, filter, linkCols),
         db<{ category: ExpenseRow["category"]; amount_cents: number; entries: number }[]>`
           SELECT category, SUM(amount_cents)::int AS amount_cents, COUNT(*)::int AS entries
           FROM expenses
@@ -226,8 +275,12 @@ export function parseExpenseInput(raw: unknown): ExpenseInput {
     throw new Error("Expense amount must be greater than zero.");
   }
   // Reject missing/invalid category instead of silently defaulting (a stray
-  // value must never reach the DB CHECK constraint).
-  const category = oneOf0(d.category, EXPENSE_CATEGORIES);
+  // value must never reach the DB CHECK constraint). A LEGACY value (the six
+  // pre-0018 spellings: feed, vet_health, maintenance, insurance, fuel, other)
+  // is not a stray value — it is what a row edited before 0018 was applied still
+  // holds. It is canonicalized to the value the migration writes, so opening and
+  // saving such an expense works and never lands a legacy value in the table.
+  const category = oneOf0(d.category, EXPENSE_CATEGORIES) ?? canonicalExpenseCategory(d.category);
   if (!category) throw new Error("Pick a category for this expense.");
   const vendor = str0(d.vendor);
   if (!vendor) throw new Error("Payee / description is required.");
@@ -262,6 +315,47 @@ export const saveExpense = createServerFn({ method: "POST" })
     }
   });
 
+/** Read a row's `source_type` when that column exists. On a database that is
+ *  missing the link columns (0018 unapplied) NO row can be linked, so the
+ *  answer is "not linked" rather than a failed query — the caller keeps working
+ *  instead of the page dying on one absent column (audit defect D2). */
+async function readLinkedSourceType(
+  db: ReturnType<typeof sql>,
+  id: number,
+  operationId: number
+): Promise<string | null> {
+  const cols = await loadExpenseLinkColumns(db);
+  if (!cols.sourceType) return null;
+  const existing = await db<[{ source_type: string | null }]>`
+    SELECT source_type FROM expenses WHERE id=${id} AND operation_id=${operationId}`;
+  return existing[0]?.source_type ?? null;
+}
+
+/** The "correct it at the source" refusals, named per source (audit Phase 2
+ *  part 2): a linked expense is changed only through the record that owns it,
+ *  and the refusal says WHERE that record lives. The restock/pasture wordings
+ *  are the original Phase-1 contract (asserted verbatim by tests); the
+ *  equipment sources name the Equipment page section, which now owns the
+ *  edit/void row actions for its service and fuel records. */
+export function linkedExpenseEditRefusal(sourceType: string | null): string {
+  if (sourceType === "maintenance") {
+    return "This expense was created from an equipment service record — edit it from the Equipment page's Service & maintenance list instead.";
+  }
+  if (sourceType === "fuel_log") {
+    return "This expense was created from a fuel fill-up — edit it from the Equipment page's Fuel usage list instead.";
+  }
+  return "This expense was created from a linked record (restock, pasture activity, equipment service, or fuel fill-up) — edit it from that record instead.";
+}
+export function linkedExpenseDeleteRefusal(sourceType: string | null): string {
+  if (sourceType === "maintenance") {
+    return "This expense came from an equipment service record — void that service record on the Equipment page to remove it.";
+  }
+  if (sourceType === "fuel_log") {
+    return "This expense came from a fuel fill-up — void that fill-up on the Equipment page to remove it.";
+  }
+  return "This expense came from a linked record (restock, pasture activity, equipment service, or fuel fill-up) — undo that record to remove it.";
+}
+
 /** Injectable expense insert/update — the exact SQL the saveExpense handler
  *  runs, scoped by operation_id. Linked rows (source_type != null) are owned
  *  by their source record and are REJECTED here so the UI can't edit them. */
@@ -271,13 +365,11 @@ export async function saveExpenseCore(
   e: ExpenseInput
 ): Promise<{ ok: true; id: number } | { ok: false; error: string }> {
   if (e.id) {
-    const existing = await db<[{ source_type: string | null }]>`
-      SELECT source_type FROM expenses WHERE id=${e.id} AND operation_id=${operationId}`;
-    const linked = existing[0]?.source_type ?? null;
+    const linked = await readLinkedSourceType(db, e.id, operationId);
     if (linked !== null) {
       return {
         ok: false,
-        error: "This expense was created from a hay/feed restock or pasture activity — edit it from that record instead.",
+        error: linkedExpenseEditRefusal(linked),
       };
     }
     const updated = await db`
@@ -327,13 +419,11 @@ export async function deleteExpenseCore(
   operationId: number,
   id: number
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const existing = await db<[{ source_type: string | null }]>`
-    SELECT source_type FROM expenses WHERE id=${id} AND operation_id=${operationId}`;
-  const reason = existing[0]?.source_type ?? null;
+  const reason = await readLinkedSourceType(db, id, operationId);
   if (reason !== null) {
     return {
       ok: false,
-      error: "This expense came from a hay/feed restock or pasture activity — undo that record to remove it.",
+      error: linkedExpenseDeleteRefusal(reason),
     };
   }
   const deleted = await db`DELETE FROM expenses WHERE id=${id} AND operation_id=${operationId} RETURNING id`;

@@ -88,36 +88,41 @@ afterAll(async () => {
 // The exact SQL the logFuel handler runs (INSERT … SELECT scoped through the
 // equipment row, so a machine from another ranch matches zero rows). Kept here
 // as the DB-level assertion of the scoping contract; the handler body itself
-// executes only inside a compiled app (see header comment).
+// executes only inside a compiled app (see header comment). Includes the 0021
+// client_request_id column (NOT NULL, unique per operation) exactly as the
+// real write path does.
 const logFuelScoped = (
   operationId: number,
   equipmentId: number | null,
   gallons: number,
-  costCents: number | null
+  costCents: number | null,
+  key: string
 ) =>
   db<[{ id: number }]>`
-    INSERT INTO fuel_log (operation_id, equipment_id, fuel_date, fuel_type, gallons, cost_cents, location, notes)
+    INSERT INTO fuel_log (operation_id, equipment_id, fuel_date, fuel_type, gallons, cost_cents, location, notes, client_request_id)
     SELECT ${operationId}, CASE WHEN ${equipmentId}::int IS NULL THEN NULL ELSE ${equipmentId}::int END,
-           '2026-09-04', 'diesel', ${gallons}, ${costCents}, 'Main tank', 'fall fill'
+           '2026-09-04', 'diesel', ${gallons}, ${costCents}, 'Main tank', 'fall fill', ${key}
     WHERE ${equipmentId}::int IS NULL
        OR EXISTS (SELECT 1 FROM equipment e WHERE e.id = ${equipmentId}::int AND e.operation_id = ${operationId})
     RETURNING id`;
 
 // The exact SQL the logMaintenance handler runs (INSERT … SELECT FROM
-// equipment e WHERE e.id AND e.operation_id = auth.operationId).
+// equipment e WHERE e.id AND e.operation_id = auth.operationId). Includes the
+// 0021 client_request_id column exactly as the real write path does.
 const logMaintScoped = (
   operationId: number,
   equipmentId: number,
   description: string,
-  vendor: string
+  vendor: string,
+  key: string
 ) =>
   db<[{ id: number }]>`
     INSERT INTO maintenance_records (operation_id, equipment_id, service_date, service_type, description,
                                      cost_cents, meter_hours, meter_miles, status, next_due_date,
-                                     next_due_hours, next_due_miles, vendor)
+                                     next_due_hours, next_due_miles, vendor, client_request_id)
     SELECT ${operationId}, ${equipmentId}, '2026-09-04', 'oil-change', ${description},
            6500, 1200, 86000, 'done', '2026-12-04',
-           1300, NULL, ${vendor}
+           1300, NULL, ${vendor}, ${key}
     FROM equipment e
     WHERE e.id = ${equipmentId} AND e.operation_id = ${operationId}
     RETURNING id`;
@@ -128,7 +133,7 @@ const logMaintScoped = (
 
 describe("logFuel scoping contract — a fill persists only for same-ranch equipment", () => {
   test("accepts a valid equipment_id from the same ranch and persists the fill", async () => {
-    const [row] = await logFuelScoped(opAId, eqAId, 48.5, 18371);
+    const [row] = await logFuelScoped(opAId, eqAId, 48.5, 18371, crypto.randomUUID());
     expect(row.id).not.toBe(0);
 
     const [f] = await db<[{ id: number; operation_id: number; gallons: string; cost_cents: number }]>`
@@ -139,7 +144,7 @@ describe("logFuel scoping contract — a fill persists only for same-ranch equip
   });
 
   test("allows a NULL equipment_id (bulk tank top-up)", async () => {
-    const [row] = await logFuelScoped(opAId, null, 250, 90000);
+    const [row] = await logFuelScoped(opAId, null, 250, 90000, crypto.randomUUID());
     expect(row.id).not.toBe(0);
     const [f] = await db<[{ equipment_id: number | null }]>`
       SELECT equipment_id FROM fuel_log WHERE id = ${row.id}`;
@@ -147,7 +152,7 @@ describe("logFuel scoping contract — a fill persists only for same-ranch equip
   });
 
   test("REJECTS a cross-ranch equipment_id — the scoped SELECT matches zero rows (A cannot log fuel on B's truck)", async () => {
-    const rows = await logFuelScoped(opAId, eqBId, 10, 4000);
+    const rows = await logFuelScoped(opAId, eqBId, 10, 4000, crypto.randomUUID());
     expect(rows.length).toBe(0);
     // Positive control: B's truck is real and reachable under B's operation.
     const [bCheck] = await db<[{ id: number }]>`
@@ -169,7 +174,7 @@ describe("logFuel scoping contract — a fill persists only for same-ranch equip
 
 describe("logMaintenance scoping contract — a service persists only for same-ranch equipment", () => {
   test("accepts a valid equipment_id from the same ranch and persists the service", async () => {
-    const [row] = await logMaintScoped(opAId, eqAId, "Oil + filter", "Bob's Shop");
+    const [row] = await logMaintScoped(opAId, eqAId, "Oil + filter", "Bob's Shop", crypto.randomUUID());
     expect(row.id).not.toBe(0);
 
     const [m] = await db<[{ id: number; operation_id: number; service_type: string; vendor: string }]>`
@@ -180,7 +185,7 @@ describe("logMaintenance scoping contract — a service persists only for same-r
   });
 
   test("REJECTS a cross-ranch equipment_id — INSERT…SELECT FROM equipment matches nothing (A cannot service B's truck)", async () => {
-    const rows = await logMaintScoped(opAId, eqBId, "Repair", "Shop B");
+    const rows = await logMaintScoped(opAId, eqBId, "Repair", "Shop B", crypto.randomUUID());
     expect(rows.length).toBe(0);
 
     // Positive control: B's truck is real and reachable under B's operation.
@@ -210,15 +215,23 @@ describe("parseFuelLogInput — the validator logFuel runs on every fill (real f
   });
 
   test("requires gallons > 0 and finite (rejects zero, blank, negative, non-numeric)", () => {
-    const base = { fuel_date: "2026-09-04" };
+    const base = { fuel_date: "2026-09-04", client_request_id: "test-fuel-key" };
     expect(() => parseFuelLogInput({ ...base, gallons: 0 })).toThrow("Gallons must be greater than zero.");
     expect(() => parseFuelLogInput({ ...base, gallons: -3 })).toThrow("Gallons must be greater than zero.");
     expect(() => parseFuelLogInput({ ...base, gallons: "" })).toThrow("Gallons must be greater than zero.");
     expect(() => parseFuelLogInput({ ...base, gallons: "abc" })).toThrow("Gallons must be greater than zero.");
   });
 
+  test("requires a request id, ≤200 chars (the per-operation idempotency key)", () => {
+    const base = { fuel_date: "2026-09-04", gallons: 10 };
+    expect(() => parseFuelLogInput({ ...base })).toThrow("A request id is required");
+    expect(() => parseFuelLogInput({ ...base, client_request_id: "x".repeat(201) })).toThrow("Request id is too long.");
+  });
+
   test("parses a valid fill: equipment optional, date kept, cost clamped at zero, blanks → null", () => {
     const out = parseFuelLogInput({
+      client_request_id: "test-fuel-key",
+      create_expense: true,
       equipment_id: 12,
       fuel_date: "2026-09-04",
       fuel_type: "gasoline",
@@ -227,6 +240,8 @@ describe("parseFuelLogInput — the validator logFuel runs on every fill (real f
       location: "  Main tank  ",
       notes: "",
     });
+    expect(out.client_request_id).toBe("test-fuel-key");
+    expect(out.create_expense).toBe(true);
     expect(out.equipment_id).toBe(12);
     expect(out.fuel_date).toBe("2026-09-04");
     expect(out.fuel_type).toBe("gasoline");
@@ -236,12 +251,14 @@ describe("parseFuelLogInput — the validator logFuel runs on every fill (real f
     expect(out.notes).toBeNull();
   });
 
-  test("unknown fuel_type defaults to diesel; negative/blank cost clamps to null or 0", () => {
-    const base = { fuel_date: "2026-09-04", gallons: 10 };
+  test("unknown fuel_type defaults to diesel; negative/blank cost clamps to null or 0; create_expense defaults true", () => {
+    const base = { fuel_date: "2026-09-04", gallons: 10, client_request_id: "test-fuel-key" };
     expect(parseFuelLogInput({ ...base, fuel_type: "jet-fuel" }).fuel_type).toBe("diesel");
     expect(parseFuelLogInput({ ...base, cost_cents: -500 }).cost_cents).toBe(0);
     expect(parseFuelLogInput({ ...base, cost_cents: "" }).cost_cents).toBeNull();
     expect(parseFuelLogInput({ ...base, equipment_id: "" }).equipment_id).toBeNull();
+    expect(parseFuelLogInput({ ...base }).create_expense).toBe(true);
+    expect(parseFuelLogInput({ ...base, create_expense: false }).create_expense).toBe(false);
   });
 });
 
@@ -256,6 +273,8 @@ describe("parseMaintLogInput — the validator logMaintenance runs on every serv
 
   test("parses a valid service: cost in cents, meters optional, defaults applied", () => {
     const out = parseMaintLogInput({
+      client_request_id: "test-maint-key",
+      create_expense: true,
       equipment_id: 7,
       service_date: "2026-09-04",
       service_type: "oil-change",
@@ -267,6 +286,8 @@ describe("parseMaintLogInput — the validator logMaintenance runs on every serv
       next_due_date: "2026-12-04",
       vendor: "Bob's Shop",
     });
+    expect(out.client_request_id).toBe("test-maint-key");
+    expect(out.create_expense).toBe(true);
     expect(out.equipment_id).toBe(7);
     expect(out.service_type).toBe("oil-change");
     expect(out.description).toBe("Oil + filter");
@@ -278,14 +299,18 @@ describe("parseMaintLogInput — the validator logMaintenance runs on every serv
     expect(out.vendor).toBe("Bob's Shop");
   });
 
-  test("meter values must be non-negative; unknown types/status fall back to defaults", () => {
-    const base = { service_date: "2026-09-04", equipment_id: 7 };
+  test("meter values must be non-negative; unknown types/status fall back to defaults; request id required", () => {
+    const base = { service_date: "2026-09-04", equipment_id: 7, client_request_id: "test-maint-key" };
+    expect(() => parseMaintLogInput({ service_date: "2026-09-04", equipment_id: 7 })).toThrow(
+      "A request id is required"
+    );
     expect(() => parseMaintLogInput({ ...base, meter_hours: -5 })).toThrow("Meter hours can't be negative.");
     expect(() => parseMaintLogInput({ ...base, meter_miles: -1 })).toThrow("Meter miles can't be negative.");
     expect(parseMaintLogInput({ ...base, service_type: "weird" }).service_type).toBe("other");
     expect(parseMaintLogInput({ ...base, status: "weird" }).status).toBe("done");
     expect(parseMaintLogInput({ ...base, cost_cents: -2 }).cost_cents).toBe(0);
     expect(parseMaintLogInput(base).meter_hours).toBeNull();
+    expect(parseMaintLogInput({ ...base, create_expense: false }).create_expense).toBe(false);
   });
 });
 
@@ -323,6 +348,7 @@ describe("tracking-form draft helpers (draft-includes)", () => {
         fuel_date: new Date().toISOString().slice(0, 10),
         gallons: "",
         pricePerGal: "",
+        totalCost: "",
         fuel_type: "diesel",
         meter_hours: "",
         meter_miles: "",
@@ -338,6 +364,7 @@ describe("tracking-form draft helpers (draft-includes)", () => {
       fuel_date: new Date().toISOString().slice(0, 10),
       gallons: "",
       pricePerGal: "",
+      totalCost: "",
       fuel_type: "diesel",
       meter_hours: "",
       meter_miles: "",

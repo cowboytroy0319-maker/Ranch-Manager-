@@ -1,0 +1,162 @@
+# ============================================================================
+# RESTOCK → EXPENSES RELIABILITY GATE
+#
+# The owner's single workflow — "a restock saves inventory and creates exactly
+# one linked expense, every time" — must fail here, in CI, before it can fail in
+# front of the owner again.
+#
+# Two gates, both on a throwaway local Postgres (NEVER production):
+#   1. `bun test` — the transaction/idempotency/edit/void guarantees plus the
+#      D2 (defensive ledger read), D3 (permanent schema fault logging) and
+#      D4 (deploy-time schema gate) checks.
+#   2. `bun run e2e:restock` — the SAME test driven through the real UI in a real
+#      browser at 375 / 390 / 430 px, against a preview-mode server and the
+#      preview scratch database, using the owner's numbers (25 bales, "Triple C
+#      Hay", today, $312.50). Screenshots are kept as the artifact.
+#
+# Playwright is installed here rather than declared in package.json: the app
+# itself must not depend on a browser to build, and qa/restockE2E.ts imports it
+# dynamically so it typechecks in a checkout where Playwright is absent.
+# ============================================================================
+name: restock-reliability
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  restock-reliability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ranch_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_ci
+      # The preview scratch database for the E2E — a THROWAWAY database in this
+      # job, created below. No production URL is ever used here.
+      PREVIEW_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_preview
+      APP_ENV: preview
+      PREVIEW_LOGIN_PASSWORD: ci-preview-only-password
+      E2E_PROOF_DIR: ${{ github.workspace }}/proof/restock-e2e
+      E2E_BASE_URL: http://127.0.0.1:3000
+      PREVIEW_LOGIN_CRED_FILE: ${{ github.workspace }}/.local/preview-login.env
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # NOTE: the app lives in site/, NOT at the repo root — every bun/psql step
+      # must run there or `bun install` fails with "could not find a package.json".
+      - name: Install dependencies
+        working-directory: site
+        run: bun install --frozen-lockfile
+
+      # The preview-mode firewall tests need their OWN local database (they
+      # refuse a preview whose target equals production), so create it before
+      # the suite runs — exactly as site/scripts/preview-env.sh does locally and
+      # as ci.yml does. Drop-then-create so a re-run of the same job is green.
+      - name: Create the preview scratch database
+        run: |
+          # Idempotent on purpose. The previous version was `CREATE || DROP && CREATE`,
+          # which the shell parses as `(CREATE || DROP) && CREATE`: the CREATE always
+          # succeeded, the DROP was skipped, and the trailing CREATE then died with
+          # `database "ranch_preview" already exists` — failing the job before a single
+          # test ran. DROP ... WITH (FORCE) also survives a leftover connection.
+          PGPASSWORD=postgres psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres \
+            -c "DROP DATABASE IF EXISTS ranch_preview WITH (FORCE)" \
+            -c "CREATE DATABASE ranch_preview"
+
+      # The DB-backed tests talk to the CI scratch database through DATABASE_URL
+      # in PRODUCTION mode, exactly as ci.yml runs them. APP_ENV must therefore be
+      # empty for these two steps: the job-level APP_ENV=preview (needed by the
+      # seed, the server and the E2E below) would route every query at the
+      # un-migrated preview database instead — which is precisely how this job's
+      # suite first failed.
+      - name: Migrate the CI scratch database
+        working-directory: site
+        env:
+          APP_ENV: ""
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_ci
+        run: bun run db:migrate
+
+      - name: Unit + integration suite (guarantees, D2/D3/D4)
+        working-directory: site
+        env:
+          APP_ENV: ""
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_ci
+        run: bun test
+
+      - name: Install Playwright (E2E only)
+        run: bun add -d playwright@1.63.0 && bunx playwright install --with-deps chromium
+        working-directory: site
+
+      - name: Deploy-time schema gate must PASS on a migrated database
+        run: bun run db:migrate && bun run db:check-schema
+        working-directory: site
+        env:
+          APP_ENV: ""
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ranch_ci
+      - name: Deploy-time schema gate must REFUSE an un-migrated database
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE ranch_unmigrated"
+          if APP_ENV= DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/ranch_unmigrated bun run db:check-schema; then
+            echo "::error::db:check-schema passed on an un-migrated database"; exit 1
+          fi
+          echo "gate correctly refused the un-migrated database"
+        working-directory: site
+      - name: Seed the preview fixture (preview-only, refuses otherwise)
+        run: bun run db:seed
+        working-directory: site
+      - name: Seed refuses to run outside preview mode
+        run: |
+          if APP_ENV= DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/ranch_ci bun run db:seed; then
+            echo "::error::db:seed ran outside APP_ENV=preview"; exit 1
+          fi
+          echo "seed correctly refused a non-preview database"
+        working-directory: site
+      # The routes the browser E2E will touch are requested here first. A dev
+      # server compiles a route on its FIRST request, so on a cold runner the
+      # sign-in page used to paint before React could hydrate it and the E2E's
+      # tap became a native browser submit ("/login?"). Warming the routes in
+      # the browser's own order removes the cold-compile stall; the E2E still
+      # waits for real hydration rather than trusting this step.
+      - name: Start the preview-mode server (and warm the routes the E2E uses)
+        run: |
+          bun run dev > /tmp/preview-server.log 2>&1 &
+          warm() {
+            for i in $(seq 1 60); do
+              curl -fsS -o /dev/null "http://127.0.0.1:3000$1" && return 0
+              sleep 2
+            done
+            echo "::error::GET $1 never answered"; tail -50 /tmp/preview-server.log; exit 1
+          }
+          warm /
+          warm /login
+          warm /feed
+          warm /expenses
+        working-directory: site
+      - name: Browser E2E — real UI at 375 / 390 / 430 px
+        run: bun run e2e:restock
+        working-directory: site
+      - name: Upload form + Expenses screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restock-e2e-proof
+          path: proof/restock-e2e
+          if-no-files-found: warn
+      - name: Server log on failure
+        if: failure()
+        run: tail -100 /tmp/preview-server.log || true

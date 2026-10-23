@@ -4,9 +4,18 @@ import { AppShell } from "~/components/AppShell";
 import { useMemo, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { TemplatesLink } from "~/components/TemplatesLink";
+import { useAddIntent } from "~/components/useAddIntent";
 import { getEquipmentData } from "~/server/equipment";
 import { EquipmentFormModal } from "~/components/equipment/EquipmentModals";
-import { LogFuelModal, LogServiceModal } from "~/components/equipment/TrackingModals";
+import {
+  FuelEditModal,
+  LogFuelModal,
+  LogServiceModal,
+  ServiceEditModal,
+  VoidFuelModal,
+  VoidServiceModal,
+} from "~/components/equipment/TrackingModals";
+import { TRACKING_ADD_INTENTS, trackingFilterFromSearch } from "~/components/equipment/trackingUI";
 import {
   CATEGORY_LABEL,
   assetStatus,
@@ -15,9 +24,12 @@ import {
   nextDueLabel,
   openRepairCount,
   type EquipmentItem,
+  type FuelEntry,
+  type MaintenanceRecord,
 } from "~/types/equipment";
 
 export const Route = createFileRoute("/equipment")({
+  validateSearch: (search: Record<string, unknown>) => trackingFilterFromSearch(search),
   beforeLoad: async () => {
     const session = await getSession();
     if (!session.authed) throw redirect({ to: "/login", search: { reason: "auth" } });
@@ -46,8 +58,29 @@ function EquipmentPage() {
 
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<EquipmentItem | null>(null);
-  const [fuelOpen, setFuelOpen] = useState(false);
-  const [serviceOpen, setServiceOpen] = useState(false);
+  const [fuelSheetOpen, setFuelSheetOpen] = useState(false);
+  const [serviceSheetOpen, setServiceSheetOpen] = useState(false);
+  const [editingFuel, setEditingFuel] = useState<FuelEntry | null>(null);
+  const [editingService, setEditingService] = useState<MaintenanceRecord | null>(null);
+  const [voidingFuel, setVoidingFuel] = useState<FuelEntry | null>(null);
+  const [voidingService, setVoidingService] = useState<MaintenanceRecord | null>(null);
+  // The honest result banner (the restock pattern): says which thing happened —
+  // expense added, record-only, duplicate, or the server's refusal verbatim.
+  const [trackingMessage, setTrackingMessage] = useState<string | null>(null);
+
+  // ?add=service / ?add=fuel (MobileNav Quick Add) land straight on the
+  // respective modal — the D7 deep-link fix, same wiring as /expenses.
+  const { add, clear: clearAdd } = useAddIntent(TRACKING_ADD_INTENTS);
+  const fuelOpen = fuelSheetOpen || add === "fuel";
+  const serviceOpen = serviceSheetOpen || add === "service";
+  const closeFuel = () => {
+    setFuelSheetOpen(false);
+    if (add === "fuel") clearAdd();
+  };
+  const closeService = () => {
+    setServiceSheetOpen(false);
+    if (add === "service") clearAdd();
+  };
 
   const board = useMemo(
     () =>
@@ -74,13 +107,16 @@ function EquipmentPage() {
 
   const fuel = useMemo(() => {
     const gallons = data.fuel.reduce((s, f) => s + f.gallons, 0);
-    const cost = data.fuel.reduce((s, f) => s + (f.cost_cents ?? 0), 0);
+    // The two-path money rule (0022): only PURCHASES carry spend — a draw's
+    // cost, when recorded for economics, is not money (its tank was expensed
+    // when bought), so it stays out of the dollar totals. Gallons stay usage.
+    const cost = data.fuel.reduce((s, f) => s + (f.record_kind === "draw" ? 0 : f.cost_cents ?? 0), 0);
     const byMachine = new Map<string, { gallons: number; cost: number; fills: number }>();
     for (const f of data.fuel) {
       const key = f.equipment_name ?? "Unassigned / bulk";
       const cur = byMachine.get(key) ?? { gallons: 0, cost: 0, fills: 0 };
       cur.gallons += f.gallons;
-      cur.cost += f.cost_cents ?? 0;
+      cur.cost += f.record_kind === "draw" ? 0 : f.cost_cents ?? 0;
       cur.fills += 1;
       byMachine.set(key, cur);
     }
@@ -200,10 +236,10 @@ function EquipmentPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CardTitle title="Equipment & vehicles" sub="Fleet register with meter, condition, and service status" />
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => { setEditing(null); setFuelOpen(true); }} className="btn-outline !px-4 !py-2 text-sm">
+            <button onClick={() => { setEditing(null); setFuelSheetOpen(true); }} className="btn-outline !px-4 !py-2 text-sm">
               ⛽ + Log fuel
             </button>
-            <button onClick={() => { setEditing(null); setServiceOpen(true); }} className="btn-outline !px-4 !py-2 text-sm">
+            <button onClick={() => { setEditing(null); setServiceSheetOpen(true); }} className="btn-outline !px-4 !py-2 text-sm">
               🔧 + Add service
             </button>
             <button onClick={() => { setEditing(null); setAddOpen(true); }} className="btn-primary !px-4 !py-2 text-sm">
@@ -284,7 +320,7 @@ function EquipmentPage() {
           sub={`${data.fuel.length} refuels on record · latest first`}
           right={
             <div className="flex flex-wrap gap-2">
-              <button onClick={() => { setEditing(null); setFuelOpen(true); }} className="btn-outline !px-3 !py-1.5 text-xs">
+              <button onClick={() => { setEditing(null); setFuelSheetOpen(true); }} className="btn-outline !px-3 !py-1.5 text-xs">
                 ⛽ + Log fuel
               </button>
               <Badge tone="blue">{fuel.gallons.toLocaleString(undefined, { maximumFractionDigits: 0 })} gal total</Badge>
@@ -306,7 +342,8 @@ function EquipmentPage() {
                     <th className="py-2 pr-3">Equipment</th>
                     <th className="py-2 pr-3">Gallons</th>
                     <th className="py-2 pr-3">Cost</th>
-                    <th className="py-2">Location</th>
+                    <th className="py-2 pr-3">Location</th>
+                    <th className="py-2"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-stone-100">
@@ -316,12 +353,40 @@ function EquipmentPage() {
                       <td className="py-2.5 pr-3">
                         <span className="font-medium text-stone-800">{f.equipment_name ?? "Unassigned"}</span>
                         <span className="ml-1.5 text-xs text-stone-400">{f.fuel_type}</span>
+                        {f.record_kind === "draw" && (
+                          <span data-testid={`fuel-kind-${f.id}`} className="ml-1.5 rounded bg-stone-200 px-1.5 py-0.5 text-xs font-semibold text-stone-600">
+                            tank draw
+                          </span>
+                        )}
                       </td>
                       <td className="whitespace-nowrap py-2.5 pr-3 text-stone-700">
                         {f.gallons.toLocaleString(undefined, { maximumFractionDigits: 1 })} gal
                       </td>
                       <td className="whitespace-nowrap py-2.5 pr-3 font-medium text-stone-800">{fmtDollars(f.cost_cents)}</td>
                       <td className="py-2.5 pr-3 text-stone-600">{f.location ?? "—"}</td>
+                      <td className="py-2.5 text-right">
+                        <span className="mr-1.5 text-xs text-stone-500" data-testid={`fuel-linked-${f.id}`}>
+                          {f.record_kind === "draw"
+                            ? "draw · no expense"
+                            : f.expense_id != null
+                              ? "↳ in Expenses"
+                              : f.cost_cents
+                                ? "record only"
+                                : ""}
+                        </span>
+                        <button
+                          onClick={() => setEditingFuel(f)}
+                          className="mr-1.5 rounded-lg border border-stone-200 px-2.5 py-1 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => setVoidingFuel(f)}
+                          className="rounded-lg border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-50"
+                        >
+                          Void
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -356,7 +421,7 @@ function EquipmentPage() {
           title="Service & maintenance"
           sub={`${data.maintenance.length} records · latest first`}
           right={
-            <button onClick={() => { setEditing(null); setServiceOpen(true); }} className="btn-outline !px-3 !py-1.5 text-xs">
+            <button onClick={() => { setEditing(null); setServiceSheetOpen(true); }} className="btn-outline !px-3 !py-1.5 text-xs">
               🔧 + Add service
             </button>
           }
@@ -384,6 +449,20 @@ function EquipmentPage() {
                         </span>
                         <span className="min-w-0 flex-1 truncate text-sm text-stone-600">{m.description}</span>
                         {m.vendor && <span className="text-xs text-stone-500">{m.vendor}</span>}
+                        <div className="flex shrink-0 gap-1.5">
+                          <button
+                            onClick={() => setEditingService(m)}
+                            className="min-h-11 rounded-lg border border-stone-200 px-3 py-2 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => setVoidingService(m)}
+                            className="min-h-11 rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50"
+                          >
+                            Void
+                          </button>
+                        </div>
                       </div>
                     ))}
                 </div>
@@ -400,7 +479,8 @@ function EquipmentPage() {
                       <th className="py-2 pr-3">Type</th>
                       <th className="py-2 pr-3">Description</th>
                       <th className="py-2 pr-3 text-right">Cost</th>
-                      <th className="py-2">Vendor</th>
+                      <th className="py-2 pr-3">Vendor</th>
+                      <th className="py-2"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-100">
@@ -415,6 +495,23 @@ function EquipmentPage() {
                           <td className="py-2.5 pr-3 text-stone-600">{m.description ?? "—"}</td>
                           <td className="whitespace-nowrap py-2.5 pr-3 text-right font-medium text-stone-800">{fmtDollars(m.cost_cents)}</td>
                           <td className="py-2.5 pr-3 text-stone-600">{m.vendor ?? "—"}</td>
+                          <td className="py-2.5 text-right">
+                            <span className="mr-1.5 text-xs text-stone-500" data-testid={`service-linked-${m.id}`}>
+                              {m.expense_id != null ? "↳ in Expenses" : m.cost_cents ? "record only" : ""}
+                            </span>
+                            <button
+                              onClick={() => setEditingService(m)}
+                              className="mr-1.5 rounded-lg border border-stone-200 px-2.5 py-1 text-xs font-medium text-stone-600 transition hover:border-green-700 hover:text-green-800"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => setVoidingService(m)}
+                              className="rounded-lg border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-50"
+                            >
+                              Void
+                            </button>
+                          </td>
                         </tr>
                       ))}
                   </tbody>
@@ -435,20 +532,74 @@ function EquipmentPage() {
         />
       ) : null}
 
-      {/* Log fuel / add service — one-column mobile forms, saved → refresh */}
+      {/* Log fuel / add service — one-column mobile forms; the result banner
+          says which thing happened (expense added, record-only, duplicate, or
+          the server's refusal verbatim). Edit/void modals correct a record and
+          its SAME linked expense, or remove both halves. */}
       {fuelOpen && (
         <LogFuelModal
           equipment={data.equipment}
-          onClose={() => setFuelOpen(false)}
-          onSaved={() => { setFuelOpen(false); refresh(); }}
+          onClose={closeFuel}
+          onSaved={(message) => { setFuelSheetOpen(false); if (add === "fuel") clearAdd(); setTrackingMessage(message); refresh(); }}
         />
       )}
       {serviceOpen && (
         <LogServiceModal
           equipment={data.equipment}
-          onClose={() => setServiceOpen(false)}
-          onSaved={() => { setServiceOpen(false); refresh(); }}
+          onClose={closeService}
+          onSaved={(message) => { setServiceSheetOpen(false); if (add === "service") clearAdd(); setTrackingMessage(message); refresh(); }}
         />
+      )}
+      {editingFuel && (
+        <FuelEditModal
+          key={`fuel-edit-${editingFuel.id}`}
+          record={editingFuel}
+          onClose={() => setEditingFuel(null)}
+          onSaved={(message) => { setEditingFuel(null); setTrackingMessage(message); refresh(); }}
+        />
+      )}
+      {editingService && (
+        <ServiceEditModal
+          key={`service-edit-${editingService.id}`}
+          record={editingService}
+          onClose={() => setEditingService(null)}
+          onSaved={(message) => { setEditingService(null); setTrackingMessage(message); refresh(); }}
+        />
+      )}
+      {voidingFuel && (
+        <VoidFuelModal
+          key={`fuel-void-${voidingFuel.id}`}
+          record={voidingFuel}
+          onClose={() => setVoidingFuel(null)}
+          onVoided={(message) => { setVoidingFuel(null); setTrackingMessage(message); refresh(); }}
+        />
+      )}
+      {voidingService && (
+        <VoidServiceModal
+          key={`service-void-${voidingService.id}`}
+          record={voidingService}
+          onClose={() => setVoidingService(null)}
+          onVoided={(message) => { setVoidingService(null); setTrackingMessage(message); refresh(); }}
+        />
+      )}
+      {trackingMessage && (
+        <div
+          className="fixed inset-x-3 bottom-20 z-[70] sm:left-auto sm:right-6 sm:w-96"
+          data-testid="tracking-message"
+          role="status"
+        >
+          <div className="rounded-xl border border-green-200 bg-white px-4 py-3 text-sm font-semibold text-green-900 shadow-xl">
+            <span className="mr-1.5">✅</span>
+            {trackingMessage}
+            <button
+              onClick={() => setTrackingMessage(null)}
+              className="ml-3 min-h-11 text-stone-400 transition hover:text-stone-700"
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
       )}
     </Shell>
   );

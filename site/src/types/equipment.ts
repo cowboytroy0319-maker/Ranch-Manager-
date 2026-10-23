@@ -75,6 +75,11 @@ export type MaintenanceRecord = {
   next_due_hours: number | null;
   next_due_miles: number | null;
   vendor: string | null;
+  /** The linked ledger row (audit Phase 2): null when the record carries no
+   *  expense yet (legacy rows, zero cost, record-only saves) or when the
+   *  target database is missing the 0018 link columns. */
+  expense_id?: number | null;
+  expense_amount_cents?: number | null;
 };
 
 export type FuelEntry = {
@@ -90,6 +95,14 @@ export type FuelEntry = {
   meter_miles: number | null;
   location: string | null;
   notes: string | null;
+  /** The owner's two-path fuel model (0022): a PURCHASE carries money (one
+   *  linked expense when a cost is present); a DRAW from an already-purchased
+   *  bulk tank is usage only and never an expense. Rows read from a database
+   *  without 0022 are legacy purchases. */
+  record_kind?: "purchase" | "draw";
+  /** Same linked-ledger fields as MaintenanceRecord (audit Phase 2). */
+  expense_id?: number | null;
+  expense_amount_cents?: number | null;
 };
 
 export type EquipmentData = {

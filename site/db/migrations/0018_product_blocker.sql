@@ -2,23 +2,38 @@
 -- linked-source columns, restock / pasture activity / livestock movement
 -- tables (Ranch Manager Pro). Additive + operation-scoped: nothing is dropped,
 -- every new row is scoped by operation_id, and category values are remapped
--- in place (old enum values remain valid until they are updated, then the
--- new CHECK is applied — exactly like 0012 did for animal statuses).
--- One statement per semicolon-terminated block, no semicolons inside comments
--- (the migrate runner strips comment lines, then splits on ';'). Idempotent
--- with IF EXISTS / IF NOT EXISTS / ADD COLUMN IF NOT EXISTS guards.
+-- in place. One statement per semicolon-terminated block, no semicolons inside
+-- comments (the migrate runner strips comment lines, then splits on ';').
+-- Idempotent with IF EXISTS / IF NOT EXISTS / ADD COLUMN IF NOT EXISTS guards.
 -- NOT applied to live Neon yet — the lead applies it for separate approval.
+--
+-- ORDERING (this file failed once, on production, because the order was wrong):
+-- the OLD allow-list must be DROPPED BEFORE the remap, not after it. While the
+-- legacy CHECK is still in force it permits only the six legacy values, so
+-- `UPDATE expenses SET category='hay_feed' WHERE category='feed'` is rejected
+-- instantly (SQLSTATE 23514, "new row ... violates check constraint
+-- expenses_category_check") and the whole migration rolls back. Only production
+-- ever hit it: it is the only database whose `expenses` table holds legacy rows
+-- (CI and the preview scratch database are created empty and seeded new-style,
+-- so those UPDATEs matched zero rows and the bug was invisible).
+-- db/migration0018Legacy.test.ts builds a 0001..0017 legacy-shaped database and
+-- applies this file, so the order can never silently regress again.
 
 -- ---- expenses: 6 → 12 categories ----
--- Remap rows to the new values BEFORE swapping the allow-list, so no row
--- ever sits under the new CHECK with an old value.
+-- 1. Drop the legacy allow-list FIRST, so the remap below is unconstrained.
+ALTER TABLE expenses DROP CONSTRAINT IF EXISTS expenses_category_check;
+-- 2. Remap the six legacy values to their new names. feed→hay_feed,
+--    vet_health→veterinary, maintenance→repairs_maintenance; insurance, fuel and
+--    other already have their final names (their UPDATEs rewrite matching rows
+--    with the same value — content unchanged).
 UPDATE expenses SET category = 'hay_feed'      WHERE category = 'feed';
 UPDATE expenses SET category = 'veterinary'    WHERE category = 'vet_health';
 UPDATE expenses SET category = 'repairs_maintenance' WHERE category = 'maintenance';
 UPDATE expenses SET category = 'fuel'          WHERE category = 'fuel';
 UPDATE expenses SET category = 'insurance'     WHERE category = 'insurance';
 UPDATE expenses SET category = 'other'         WHERE category = 'other';
-ALTER TABLE expenses DROP CONSTRAINT IF EXISTS expenses_category_check;
+-- 3. Re-add the wider allow-list. Every value now present is in this list, so
+--    the validation scan cannot fail on a legacy row.
 ALTER TABLE expenses ADD CONSTRAINT expenses_category_check
   CHECK (category IN ('hay_feed', 'livestock', 'fuel', 'repairs_maintenance', 'veterinary',
                       'supplies', 'labor', 'utilities', 'land_pasture', 'insurance',

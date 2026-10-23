@@ -60,6 +60,16 @@ jobs:
         working-directory: site
         run: bun run db:migrate
 
+      # The deployment guard (site/src/dbGuard.ts) refuses a preview whose target
+      # equals the production target, so the preview-mode firewall tests
+      # (src/dbErrors.test.ts) need their OWN local database. Same name local runs
+      # use (site/scripts/preview-env.sh creates it there). No schema needed —
+      # those tests only exercise the error firewall.
+      - name: Create the preview-mode scratch database
+        run: |
+          psql "postgres://postgres:postgres@127.0.0.1:5432/postgres" \
+            -c 'CREATE DATABASE ranch_preview'
+
       - name: Test
         working-directory: site
         run: bun test

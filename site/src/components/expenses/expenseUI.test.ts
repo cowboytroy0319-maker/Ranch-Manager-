@@ -73,6 +73,20 @@ describe("expense linked-source indicators", () => {
     expect(expenseSourceIndicator({ source_type: null, source_id: null, pasture_id: null })).toBeNull();
     expect(MANUAL_SOURCE_LABEL).toBe("manual");
   });
+  test("equipment-service rows point at the Equipment module (part 2 sources)", () => {
+    const ind = expenseSourceIndicator({ source_type: "maintenance", source_id: 21, pasture_id: null });
+    expect(ind?.label).toBe("↳ equipment service");
+    expect(ind?.to).toBe("/equipment");
+    expect(ind?.actionLabel).toBe("Open in Equipment");
+    expect(ind?.hint).toContain("corrected there");
+  });
+  test("fuel fill-up rows point at the Equipment module (part 2 sources)", () => {
+    const ind = expenseSourceIndicator({ source_type: "fuel_log", source_id: 33, pasture_id: null });
+    expect(ind?.label).toBe("↳ fuel fill-up");
+    expect(ind?.to).toBe("/equipment");
+    expect(ind?.actionLabel).toBe("Open in Equipment");
+    expect(ind?.hint).toContain("corrected there");
+  });
 });
 
 describe("restock client_request_id (idempotency on double-submit)", () => {

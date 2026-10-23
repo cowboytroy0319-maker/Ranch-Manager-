@@ -70,6 +70,22 @@ export function expenseSourceIndicator(
       hint: "Created from a pasture activity — corrected there, not here",
     };
   }
+  if (row.source_type === "maintenance") {
+    return {
+      label: "↳ equipment service",
+      to: "/equipment",
+      actionLabel: "Open in Equipment",
+      hint: "Created from a service record — corrected there, not here",
+    };
+  }
+  if (row.source_type === "fuel_log") {
+    return {
+      label: "↳ fuel fill-up",
+      to: "/equipment",
+      actionLabel: "Open in Equipment",
+      hint: "Created from a fuel fill-up — corrected there, not here",
+    };
+  }
   return null;
 }
 
