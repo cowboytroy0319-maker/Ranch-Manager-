@@ -6,18 +6,37 @@
  * Applied filenames are tracked in a `schema_migrations` table, so re-running
  * is a no-op. Each migration runs inside a transaction: all of it applies or
  * none of it does.
+ *
+ * PREVIEW WORK — the only safe way to migrate a scratch database is to strip the
+ * inherited production URL and name the mode explicitly:
+ *
+ *   env -u DATABASE_URL APP_ENV=preview PREVIEW_ENV_EXPECTED=1 \
+ *     PREVIEW_DATABASE_URL=postgres://user@127.0.0.1:5432/ranch_preview bun run db:migrate
+ *
+ * This script REFUSES to run against a production-marked target (a hosted/Neon
+ * host or a "prod" name — src/dbGuard.ts) unless `--allow-production` is passed
+ * explicitly, and it refuses any misconfigured preview (missing preview URL, a
+ * preview target equal to the production target, or PREVIEW_ENV_EXPECTED set
+ * while APP_ENV is not "preview"). A refusal connects to nothing and prints the
+ * rule it refused under.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeDb, rawSql } from "../src/db";
+import { assertOperatorTargetSafe } from "../src/dbGuard";
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "migrations");
 
 /** Split a .sql file into individual statements on semicolons (simple DDL —
  * no semicolons inside string literals in our migrations). `--` comment lines
- * are stripped first so semicolons inside comments can't break the split. */
-function splitStatements(sqlText: string): string[] {
+ * are stripped first so semicolons inside comments can't break the split.
+ *
+ * EXPORTED so a test can apply a migration file exactly the way this runner
+ * does (db/migration0018Legacy.test.ts builds a legacy-shaped scratch database
+ * from 0001…0017 and then applies 0018 through this same splitter — a test that
+ * splits differently would not be testing the thing that runs in production). */
+export function splitStatements(sqlText: string): string[] {
   const withoutComments = sqlText
     .split("\n")
     .filter((line) => !line.trim().startsWith("--"))
@@ -57,8 +76,11 @@ export async function runMigrations(): Promise<string[]> {
   return ran;
 }
 
-// Run directly: `bun db/migrate.ts`
+// Run directly: `bun db/migrate.ts` (guarded — see the header comment)
 if (import.meta.main) {
+  if (!assertOperatorTargetSafe(process.env, process.argv, "db:migrate")) {
+    process.exit(2);
+  }
   runMigrations()
     .then((ran) => console.log(`done — ${ran.length} migration(s) applied`))
     .catch((err) => {

@@ -54,7 +54,77 @@ longer exists.", inventory-below-zero, auth errors, …) pass through completely
 unchanged. The raw technical detail (SQLSTATE code + original message) is
 logged **server-side only** via `console.error` at the DB layer.
 
-## 3. What the owner needs to do (two variables, one scratch database)
+## 2c. The two refusals (`src/dbGuard.ts`) — and the preview status page
+
+Selecting a database by `APP_ENV` is not enough on its own: a *misconfigured*
+preview still reaches production. Every time a connection is resolved, both
+directions are checked, and a refusal means **no query is executed and there is
+never a silent fallback** (loud server-side log + a customer-safe error):
+
+| Direction | Refused when | Rule |
+| --- | --- | --- |
+| preview (`APP_ENV=preview`) | `PREVIEW_DATABASE_URL` missing/blank | `PREVIEW_DATABASE_URL_MISSING` |
+| preview | `PREVIEW_DATABASE_URL` is not a usable connection string | `PREVIEW_DATABASE_URL_UNPARSEABLE` |
+| preview | preview target `host:port/dbname` equals `DATABASE_URL`'s target, **or** the preview host is the production host | `PREVIEW_TARGET_EQUALS_PRODUCTION` |
+| production (`APP_ENV` unset or anything else) | `PREVIEW_ENV_EXPECTED` is set while the mode is not `preview` — a preview deployment that lost its `APP_ENV` | `PREVIEW_ENV_EXPECTED_BUT_NOT_PREVIEW` |
+| production | `DATABASE_URL` points at preview-marked data (`ranch_preview`, `*_preview`, or the same target as `PREVIEW_DATABASE_URL`) | `PRODUCTION_DB_IS_PREVIEW` |
+
+The DB error firewall above is unchanged: refusals pick the same
+environment-appropriate customer-safe wording, and preview wording still only
+ever appears in preview mode.
+
+`/preview-status` (server-rendered, public, phone-friendly) reports the verdict
+verbatim: environment mode + which variable supplied it, the preview database
+identity as `user@host:port/dbname` (never a password), whether that is the
+production target, the production host name, the guard state (pass / refused +
+rule), migrations applied + latest, and the branch + commit the working tree was
+synced from (`.preview-deployment.json`).
+
+## 2d. Operator tooling refuses production too (`db/migrate.ts`, `db/seed.ts`)
+
+`bun run db:migrate` / `bun run db:seed` refuse to run against a
+**production-marked** target (a hosted/Neon host, or a host/database name
+beginning with `prod`) unless `--allow-production` is passed explicitly, and they
+refuse every misconfigured preview above regardless of flags. A refusal connects
+to nothing. This is the guard that stops a bare `bun run db:migrate` in a shell
+that exports the production `DATABASE_URL` from migrating production. Preview
+work therefore always looks like:
+
+```bash
+env -u DATABASE_URL APP_ENV=preview PREVIEW_ENV_EXPECTED=1 \
+  PREVIEW_DATABASE_URL=postgres://preview_app@127.0.0.1:5432/ranch_preview \
+  bun run db:migrate
+```
+
+## 3. How the preview deployment gets its mode locally (this sandbox)
+
+The phone-reachable preview is the managed `vite dev` server in this directory.
+Platform secrets reach both environments, so `APP_ENV` is **never** a platform
+secret; the dev server gets its mode from a local, gitignored file instead:
+
+```bash
+site/scripts/preview-env.sh up       # role + database + .preview-env + migrations
+site/scripts/preview-env.sh status   # mode + database identity + migration count
+site/scripts/preview-env.sh down     # remove .preview-env (leaves the database)
+```
+
+* `.preview-env` (chmod 600, gitignored, excluded from the shared-tree rsync)
+  holds `APP_ENV=preview`, `PREVIEW_DATABASE_URL`, `PREVIEW_ENV_EXPECTED=1`.
+* `vite.config.ts` loads it **only** when `command === "serve"` (the dev /
+  working-site server). The published site runs `serve.ts` and never takes that
+  branch, so it stays on `DATABASE_URL` byte for byte.
+* The file is **not** named `.env.local` on purpose: Bun auto-loads
+  `.env`/`.env.local` into `process.env` for *every* process it starts in this
+  directory — including `bun run start` (the published server) and a bare
+  `bun run db:migrate` — which would hand preview mode to a published process.
+* The scratch database is `ranch_preview`, owned by the dedicated role
+  `preview_app` with a generated password that lives only in `.preview-env` and
+  the root-only credential file. It is persistent for the whole audit cycle.
+* `site/scripts/sync-shared-site.sh` performs the full-tree sync of this repo's
+  `site/` into the working tree and rewrites `.preview-deployment.json`
+  (branch/commit/sync time/marker) that `/preview-status` reads.
+
+## 3b. What the owner needs to do for a REAL hosted preview (two variables, one scratch database)
 
 1. **Create a scratch database** for the preview — e.g. a **new, empty Neon
    project** (a few clicks, free tier is fine). Do **not** point it at the
@@ -91,20 +161,32 @@ there.
 
 ## 4. Proof this works (run locally anytime)
 
-Local disposable Postgres on `127.0.0.1:5433`:
+Local disposable Postgres on `127.0.0.1:5432` (never the `ranch_ci` test database;
+`site/scripts/preview-env.sh up` creates role + database + `.preview-env`):
 
 ```bash
-PGBIN=/usr/lib/postgresql/16/bin
-runuser -u postgres -- $PGBIN/psql -p 5433 \
-  -c "DROP DATABASE IF EXISTS ranch_preview;" -c "CREATE DATABASE ranch_preview;"
 cd /home/team/shared/site
-DATABASE_URL="postgresql://postgres@127.0.0.1:5433/ranch_preview" bun run db:migrate
-APP_ENV=preview \
-DATABASE_URL="postgresql://postgres@127.0.0.1:5433/ranch_preview" \
-PREVIEW_DATABASE_URL="postgresql://postgres@127.0.0.1:5433/ranch_preview" \
-  bun qa/previewSmoke.ts        # all smoke checks must pass
-DATABASE_URL="postgresql://postgres@127.0.0.1:5433/ranch_preview" \
-  bun test src/dbErrors.test.ts # firewall + selection regression suite
+site/scripts/preview-env.sh up        # creates preview_app + ranch_preview, migrates it
+site/scripts/preview-env.sh status    # mode + identity + migration count
+
+# Guards (pure unit tests, no database needed):
+bun test src/dbGuard.test.ts
+
+# Firewall + selection regression suite. The preview-mode cases need their own
+# database (a preview pointed at the production target is refused by design), so
+# DATABASE_URL stays the CI test database while PREVIEW_DATABASE_URL is derived
+# as ranch_preview on the same local cluster:
+DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/ranch_ci" \
+  bun test src/dbErrors.test.ts
+```
+
+Anything that mutates the scratch database goes through the explicit preview
+environment — never through the inherited `DATABASE_URL`:
+
+```bash
+env -u DATABASE_URL APP_ENV=preview PREVIEW_ENV_EXPECTED=1 \
+  PREVIEW_DATABASE_URL="postgresql://preview_app@127.0.0.1:5432/ranch_preview" \
+  bun run db:migrate
 ```
 
 `qa/previewSmoke.ts` verifies through the app's real server code paths:

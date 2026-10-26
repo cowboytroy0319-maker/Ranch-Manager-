@@ -70,6 +70,28 @@ export type UsageEntry = {
   created_at: string;
 };
 
+/** One restock_log row — a restock the operator entered, plus the ledger row it
+ *  owns (linked expenses are created/updated/removed by the restock, never by
+ *  the expenses module). This is what the History list renders so a restock can
+ *  be EDITED or VOIDED instead of being write-only. */
+export type RestockEntry = {
+  id: number;
+  item_kind: "hay" | "feed";
+  hay_item_id: number | null;
+  feed_item_id: number | null;
+  /** Human label of the item (hay: source/type, feed: name) */
+  item_label: string;
+  quantity: number;
+  unit: string;
+  restock_date: string; // YYYY-MM-DD
+  total_cost_cents: number | null;
+  vendor: string | null;
+  notes: string | null;
+  /** The linked expenses row, when a cost was recorded (null = inventory only) */
+  expense_id: number | null;
+  created_at: string;
+};
+
 export type FeedData = {
   configured: boolean; // false when DATABASE_URL is missing (no-DB state)
   error?: string; // short human-readable reason when configured but broken
@@ -77,6 +99,7 @@ export type FeedData = {
   feed: FeedItem[];
   groups: HerdGroupRef[];
   usage: UsageEntry[]; // most recent first
+  restocks: RestockEntry[]; // most recent first
 };
 
 /** Minimal herd-group reference (full type lives in types/livestock). */

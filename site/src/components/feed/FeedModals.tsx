@@ -11,18 +11,31 @@
 // ============================================================================
 import { useState } from "react";
 import { Card } from "~/components/ui";
-import { logUsage, restockItem, saveFeedItem, saveHay, type FeedItemInput, type HayInput } from "~/server/feed";
+import { deleteRestock, logUsage, restockItem, saveFeedItem, saveHay, updateRestock, type FeedItemInput, type HayInput } from "~/server/feed";
 import {
   FEED_CATEGORIES,
   FEED_UNITS,
   HAY_TYPES,
   HAY_UNITS,
+  fmtDollars,
   fmtQty,
   type FeedItem,
   type HayItem,
   type HerdGroupRef,
+  type RestockEntry,
 } from "~/types/feed";
-import { buildRestockSubmit, newClientRequestId, restockResultMessage } from "./restockUI";
+import {
+  buildRestockSubmit,
+  newClientRequestId,
+  parseCostToCents,
+  restockResultMessage,
+  restockSubmitLabel,
+  validateRestockForm,
+  RESTOCK_ADD_EXPENSE_LABEL,
+  RESTOCK_COST_HELPER_TEXT,
+  RESTOCK_INVENTORY_ONLY_LABEL,
+  type RestockFormState,
+} from "./restockUI";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -514,6 +527,14 @@ export function hayLabel(h: HayItem): string {
 // existing hay/feed item and optionally records a linked hay_feed expense.
 // Idempotent: client_request_id is generated once per form-open and reused on
 // every retry/double-tap; the server dedupes on it.
+//
+// OWNER CONTRACT (stage 2) — visible in this form, asserted by the browser E2E:
+//   quantity · unit (a REAL control) · item · vendor/payee · restock date ·
+//   "Total cost paid" (required for the expense path) · notes/reference ·
+//   helper text "Saving this restock will add this amount to Expenses." ·
+//   an "Add linked expense" choice ON BY DEFAULT when a cost is entered ·
+//   an explicit "Inventory only — no expense" choice when the cost is blank ·
+//   submit label "Save restock & add expense" whenever a cost is present.
 // ---------------------------------------------------------------------------
 
 export function RestockModal({
@@ -534,44 +555,78 @@ export function RestockModal({
   const items = itemKind === "hay" ? hay : feed;
   const [itemId, setItemId] = useState<number | null>(preselect?.id ?? items[0]?.id ?? null);
   const [quantity, setQuantity] = useState<number | "">("");
+  // "" means "follow the selected item's own unit" — the control still shows and
+  // controls the unit: a different unit is REFUSED by the server, never ignored.
+  const [unit, setUnit] = useState<string>("");
   const [restockDate, setRestockDate] = useState(today());
   const [costDollars, setCostDollars] = useState("");
   const [vendor, setVendor] = useState("");
   const [notes, setNotes] = useState("");
+  // ON BY DEFAULT: a cost is expected to become an expense unless the operator
+  // explicitly says otherwise.
+  const [addExpense, setAddExpense] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // ONE idempotency key per form-open. Never regenerated on retry.
   const [clientRequestId] = useState(() => newClientRequestId());
 
   const selected = items.find((x) => x.id === itemId) ?? null;
-  const unit = selected?.unit ?? "";
+  const itemUnit = selected?.unit ?? "";
+  const unitOptions: readonly string[] = itemKind === "hay" ? HAY_UNITS : FEED_UNITS;
+  const effectiveUnit = unit || itemUnit;
+  const costCents = parseCostToCents(costDollars);
+  const submitLabel = restockSubmitLabel(costCents, addExpense);
+
+  // Blank cost → the explicit "Inventory only" choice (a $0 expense is never
+  // created silently). Typing a cost back in returns to "Add linked expense".
+  const onCostChange = (value: string) => {
+    setCostDollars(value);
+    if (parseCostToCents(value) === null) setAddExpense(false);
+    else setAddExpense(true);
+  };
 
   const switchKind = (kind: "hay" | "feed") => {
     setItemKind(kind);
     const next = kind === "hay" ? hay : feed;
     setItemId(next[0]?.id ?? null);
     setQuantity("");
+    setUnit("");
   };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selected || quantity === "" || Number(quantity) <= 0) {
-      setError("Pick an item and a quantity greater than zero.");
+    if (!selected) {
+      setError("Pick an item to restock.");
+      return;
+    }
+    const form: RestockFormState = {
+      quantity,
+      unit: effectiveUnit,
+      restock_date: restockDate,
+      costDollars,
+      vendor,
+      notes,
+      addExpense,
+    };
+    const problem = validateRestockForm(form, selected);
+    if (problem) {
+      setError(problem);
       return;
     }
     setSaving(true);
     setError(null);
-    const cents =
-      costDollars.trim() === "" ? null : Math.round(Number(costDollars) * 100);
+    // Only the "Add linked expense" choice sends a cost; "Inventory only"
+    // always sends null, so no expense row can be created from that path.
+    const cents = addExpense ? costCents : null;
     // Same clientRequestId on EVERY attempt (first send or retry).
     const payload = buildRestockSubmit(
       {
         item_kind: itemKind,
         item_id: selected.id,
         quantity: Number(quantity),
-        unit: selected.unit,
+        unit: effectiveUnit,
         restock_date: restockDate,
-        total_cost_cents: cents != null && Number.isFinite(cents) && cents > 0 ? cents : null,
+        total_cost_cents: cents,
         vendor: vendor.trim() ? vendor.trim() : null,
         notes: notes.trim() ? notes.trim() : null,
       },
@@ -596,13 +651,19 @@ export function RestockModal({
           <button type="button" onClick={onClose} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 sm:w-auto sm:px-5">
             Cancel
           </button>
-          <button type="submit" form="restock-form" disabled={saving || !selected} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-green-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-900 disabled:opacity-60 sm:w-auto sm:px-5">
-            {saving ? "Saving…" : "Save restock"}
+          <button
+            type="submit"
+            form="restock-form"
+            data-testid="restock-submit"
+            disabled={saving || !selected}
+            className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-green-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-900 disabled:opacity-60 sm:w-auto sm:px-5"
+          >
+            {saving ? "Saving…" : submitLabel}
           </button>
         </div>
       }
     >
-      <form id="restock-form" onSubmit={submit} className="space-y-4">
+      <form id="restock-form" data-testid="restock-form" onSubmit={submit} className="space-y-4" noValidate>
         {error && <ErrorNote error={error} />}
         <Field label="Item type">
           <div className="grid grid-cols-2 gap-2" role="group" aria-label="Item type">
@@ -620,7 +681,7 @@ export function RestockModal({
           </div>
         </Field>
         <Field label="Item *">
-          <select className={inputCls} value={itemId ?? ""} onChange={(e) => { setItemId(e.target.value ? Number(e.target.value) : null); setQuantity(""); }}>
+          <select className={inputCls} value={itemId ?? ""} onChange={(e) => { setItemId(e.target.value ? Number(e.target.value) : null); setQuantity(""); setUnit(""); }}>
             <option value="">— pick an item —</option>
             {items.map((x) => (
               <option key={x.id} value={x.id}>
@@ -630,39 +691,281 @@ export function RestockModal({
           </select>
         </Field>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label={`Quantity added${unit ? ` (${unit})` : ""} *`}>
+          <Field label={`Quantity added${effectiveUnit ? ` (${effectiveUnit})` : ""} *`}>
             <input
-              type="number" min={0} step={unit === "tons" ? 0.1 : 1}
-              inputMode={unit === "tons" ? "decimal" : "numeric"}
+              type="number" min={0} step={effectiveUnit === "tons" ? 0.1 : 1}
+              inputMode={effectiveUnit === "tons" ? "decimal" : "numeric"}
+              data-testid="restock-quantity"
               className={inputCls}
               value={quantity}
               onChange={(e) => setQuantity(e.target.value === "" ? "" : Number(e.target.value))}
               required
             />
-            {selected && <p className="mt-1 text-xs text-stone-500">{fmtQty(selected.quantity, selected.unit)} on hand now · counted in {unit || "—"}</p>}
+            {selected && <p className="mt-1 text-xs text-stone-500">{fmtQty(selected.quantity, selected.unit)} on hand now · counted in {itemUnit || "—"}</p>}
+          </Field>
+          <Field label="Unit *">
+            <select
+              className={inputCls}
+              data-testid="restock-unit"
+              value={effectiveUnit}
+              onChange={(e) => setUnit(e.target.value)}
+              required
+            >
+              {unitOptions.map((u) => (
+                <option key={u} value={u}>{u}</option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-stone-500">
+              This item is counted in {itemUnit || "—"} — a different unit is refused so the count never mixes bales and tons.
+            </p>
           </Field>
           <Field label="Restock date *">
-            <input type="date" className={inputCls} value={restockDate} onChange={(e) => setRestockDate(e.target.value)} required />
+            <input type="date" className={inputCls} data-testid="restock-date" value={restockDate} onChange={(e) => setRestockDate(e.target.value)} required />
           </Field>
-          <Field label="Total cost ($)">
+          <Field label="Vendor / payee">
+            <input className={inputCls} data-testid="restock-vendor" value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="Triple C Hay…" />
+          </Field>
+          <Field label="Total cost paid *" className="sm:col-span-2">
             <input
               type="number" min={0} step={0.01}
               inputMode="decimal"
               className={inputCls}
+              data-testid="restock-cost"
+              aria-describedby="restock-cost-helper"
+              value={costDollars}
+              onChange={(e) => onCostChange(e.target.value)}
+              placeholder="312.50"
+            />
+            <p id="restock-cost-helper" data-testid="restock-cost-helper" className="mt-1 text-xs text-stone-500">
+              {RESTOCK_COST_HELPER_TEXT}
+            </p>
+          </Field>
+        </div>
+        <Field label="Linked expense">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" role="group" aria-label="Linked expense">
+            <button
+              type="button"
+              data-testid="restock-add-expense"
+              aria-pressed={addExpense}
+              onClick={() => setAddExpense(true)}
+              className={`min-h-11 rounded-lg border px-3 py-2.5 text-left text-sm font-semibold transition ${addExpense ? "border-green-700 bg-green-800 text-white" : "border-stone-300 bg-white text-stone-700"}`}
+            >
+              {RESTOCK_ADD_EXPENSE_LABEL}
+              <span className={`block text-xs font-normal ${addExpense ? "text-green-100" : "text-stone-500"}`}>
+                Adds this cost to Expenses
+              </span>
+            </button>
+            <button
+              type="button"
+              data-testid="restock-inventory-only"
+              aria-pressed={!addExpense}
+              onClick={() => setAddExpense(false)}
+              className={`min-h-11 rounded-lg border px-3 py-2.5 text-left text-sm font-semibold transition ${!addExpense ? "border-stone-700 bg-stone-800 text-white" : "border-stone-300 bg-white text-stone-700"}`}
+            >
+              {RESTOCK_INVENTORY_ONLY_LABEL}
+              <span className={`block text-xs font-normal ${!addExpense ? "text-stone-300" : "text-stone-500"}`}>
+                No expense is created
+              </span>
+            </button>
+          </div>
+        </Field>
+        <Field label="Notes / reference">
+          <textarea className={inputCls} data-testid="restock-notes" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery, quality, stack location, invoice #…" />
+        </Field>
+      </form>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Edit an EXISTING restock. Corrects the inventory delta and updates the SAME
+// linked expense row (never a second row); removing the cost deletes that row.
+// ---------------------------------------------------------------------------
+
+export function RestockEditModal({
+  restock,
+  onClose,
+  onSaved,
+}: {
+  restock: RestockEntry;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+}) {
+  const [quantity, setQuantity] = useState<number | "">(restock.quantity);
+  const [unit, setUnit] = useState<string>(restock.unit);
+  const [restockDate, setRestockDate] = useState(restock.restock_date);
+  const [costDollars, setCostDollars] = useState(
+    restock.total_cost_cents != null ? (restock.total_cost_cents / 100).toFixed(2) : ""
+  );
+  const [vendor, setVendor] = useState(restock.vendor ?? "");
+  const [notes, setNotes] = useState(restock.notes ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const costCents = parseCostToCents(costDollars);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (quantity === "" || Number(quantity) <= 0) {
+      setError("Quantity added must be greater than zero.");
+      return;
+    }
+    if (!restockDate) {
+      setError("Restock date is required.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const res = await updateRestock({
+      data: {
+        id: restock.id,
+        quantity: Number(quantity),
+        unit,
+        restock_date: restockDate,
+        total_cost_cents: costCents,
+        vendor: vendor.trim() ? vendor.trim() : null,
+        notes: notes.trim() ? notes.trim() : null,
+      },
+    });
+    setSaving(false);
+    if (res.ok) onSaved(costCents === null ? "Restock updated — no linked expense." : "Restock and linked expense updated.");
+    else setError(res.error);
+  };
+
+  return (
+    <Modal
+      title={`Edit restock #${restock.id}`}
+      sub={`${restock.item_label} — correcting this updates the same linked expense`}
+      onClose={onClose}
+      footer={
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 sm:w-auto sm:px-5">
+            Cancel
+          </button>
+          <button type="submit" form="restock-edit-form" data-testid="restock-edit-submit" disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-green-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-900 disabled:opacity-60 sm:w-auto sm:px-5">
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      }
+    >
+      <form id="restock-edit-form" data-testid="restock-edit-form" onSubmit={submit} className="space-y-4" noValidate>
+        {error && <ErrorNote error={error} />}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label={`Quantity added (${restock.unit}) *`}>
+            <input
+              type="number" min={0} step={restock.unit === "tons" ? 0.1 : 1}
+              inputMode={restock.unit === "tons" ? "decimal" : "numeric"}
+              className={inputCls}
+              data-testid="restock-edit-quantity"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value === "" ? "" : Number(e.target.value))}
+              required
+            />
+          </Field>
+          <Field label="Restock date *">
+            <input type="date" className={inputCls} value={restockDate} onChange={(e) => setRestockDate(e.target.value)} required />
+          </Field>
+          <Field label="Unit *">
+            <select
+              className={inputCls}
+              data-testid="restock-edit-unit"
+              value={unit}
+              onChange={(e) => setUnit(e.target.value)}
+              required
+            >
+              {(restock.item_kind === "hay" ? HAY_UNITS : FEED_UNITS).map((u) => (
+                <option key={u} value={u}>{u}</option>
+              ))}
+              {!(restock.item_kind === "hay" ? HAY_UNITS : FEED_UNITS).includes(restock.unit as never) && (
+                <option value={restock.unit}>{restock.unit}</option>
+              )}
+            </select>
+            <p className="mt-1 text-xs text-stone-500">
+              This item is counted in {restock.unit} — a different unit is refused so the count never mixes bales and tons.
+            </p>
+          </Field>
+          <Field label="Total cost paid">
+            <input
+              type="number" min={0} step={0.01}
+              inputMode="decimal"
+              className={inputCls}
+              data-testid="restock-edit-cost"
+              aria-describedby="restock-edit-cost-helper"
               value={costDollars}
               onChange={(e) => setCostDollars(e.target.value)}
               placeholder="0.00"
             />
-            <p className="mt-1 text-xs text-stone-500">Optional — with a cost, a Hay &amp; feed expense is recorded and linked to this restock.</p>
+            <p id="restock-edit-cost-helper" className="mt-1 text-xs text-stone-500">{RESTOCK_COST_HELPER_TEXT}</p>
           </Field>
-          <Field label="Vendor">
-            <input className={inputCls} value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="Mule Shoe Dairy…" />
+          <Field label="Vendor / payee">
+            <input className={inputCls} data-testid="restock-edit-vendor" value={vendor} onChange={(e) => setVendor(e.target.value)} />
           </Field>
         </div>
-        <Field label="Notes">
-          <textarea className={inputCls} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Delivery, quality, stack location…" />
+        <Field label="Notes / reference">
+          <textarea className={inputCls} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
         </Field>
       </form>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Void a restock: reverse the inventory AND remove the same linked expense, in
+// one transaction. Confirmation is explicit about both halves.
+// ---------------------------------------------------------------------------
+
+export function VoidRestockModal({
+  restock,
+  onClose,
+  onVoided,
+}: {
+  restock: RestockEntry;
+  onClose: () => void;
+  onVoided: (message: string) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const confirm = async () => {
+    setSaving(true);
+    setError(null);
+    const res = await deleteRestock({ data: restock.id });
+    setSaving(false);
+    if (res.ok) {
+      onVoided(
+        res.linked_expense_removed
+          ? "Restock voided — stock reversed and the linked expense removed."
+          : "Restock voided — stock reversed (there was no linked expense)."
+      );
+    } else {
+      setError(res.error);
+    }
+  };
+
+  return (
+    <Modal
+      title="Void this restock?"
+      sub={`${restock.item_label} — ${fmtQty(restock.quantity, restock.unit)} on ${restock.restock_date}`}
+      onClose={onClose}
+      footer={
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-50 sm:w-auto sm:px-5">
+            Cancel
+          </button>
+          <button type="button" onClick={confirm} data-testid="restock-void-confirm" disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-red-700 px-4 py-3 text-sm font-semibold text-white transition hover:bg-red-800 disabled:opacity-60 sm:w-auto sm:px-5">
+            {saving ? "Voiding…" : "Void restock"}
+          </button>
+        </div>
+      }
+    >
+      {error && <ErrorNote error={error} />}
+      <ul className="space-y-1.5 text-sm text-stone-700">
+        <li>• {fmtQty(restock.quantity, restock.unit)} come back off the on-hand count.</li>
+        <li>
+          • {restock.expense_id != null
+            ? `The linked ${restock.total_cost_cents != null ? fmtDollars(restock.total_cost_cents) : ""} expense is removed from Expenses.`
+            : "There is no linked expense to remove."}
+        </li>
+      </ul>
     </Modal>
   );
 }

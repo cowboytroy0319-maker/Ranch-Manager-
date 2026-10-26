@@ -46,6 +46,22 @@ if (!/127\.0\.0\.1/.test(url)) {
   );
 }
 
+/**
+ * The PREVIEW-mode tests connect to a DIFFERENT local database than the
+ * production-mode ones. That is not incidental: since the deployment guard
+ * (src/dbGuard.ts) refuses a preview whose target equals the production target,
+ * a suite that pointed both variables at the same database would (correctly) be
+ * refused and could no longer exercise the firewall in preview mode.
+ *
+ * Local runs: the scratch preview database `ranch_preview`
+ * (`site/scripts/preview-env.sh up` creates it). CI: the workflow creates the
+ * same name in the service container.
+ */
+const previewUrl =
+  process.env.PREVIEW_DATABASE_URL && /127\.0\.0\.1/.test(process.env.PREVIEW_DATABASE_URL)
+    ? process.env.PREVIEW_DATABASE_URL
+    : url.replace(/(\/[^/?]+)(\?|$)/, "/ranch_preview$2");
+
 // ---------------------------------------------------------------------------
 // Env-var helpers. `setMode` is the single source of truth for the mode the
 // app sees; `withEnv` snapshots + restores APP_ENV / PREVIEW_DATABASE_URL so a
@@ -56,11 +72,11 @@ type Mode = "production" | "preview" | "local";
 const setMode = (mode: Mode): void => {
   if (mode === "preview") {
     process.env.APP_ENV = "preview";
-    // The preview scratch DB is the SAME local cluster in this suite (both
-    // DATABASE_URL and PREVIEW_DATABASE_URL point at 127.0.0.1) so the firewall
-    // tests can run real queries; the SELECTION is what's under test, not the
-    // host.
-    process.env.PREVIEW_DATABASE_URL = url;
+    // The preview scratch DB is on the SAME local cluster but is a DIFFERENT
+    // database than DATABASE_URL, so the deployment guard's
+    // "preview target == production target" rule passes while the firewall
+    // tests still run real queries. The SELECTION is what's under test.
+    process.env.PREVIEW_DATABASE_URL = previewUrl;
   } else if (mode === "production") {
     process.env.APP_ENV = "production";
     delete process.env.PREVIEW_DATABASE_URL;

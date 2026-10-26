@@ -8,7 +8,13 @@ import { useState } from "react";
 import { LabeledField } from "~/components/ui";
 import { SheetModal, StickyFooter, sheetInputCls } from "~/components/Sheet";
 import { saveExpense, type ExpenseInput } from "~/server/expenses";
-import { EXPENSE_CATEGORIES, CATEGORY_LABEL, type ExpenseRow } from "~/types/expenses";
+import {
+  EXPENSE_CATEGORY_OPTIONS,
+  categoryLabel,
+  expenseFormCategory,
+  isExpenseCategory,
+  type ExpenseRow,
+} from "~/types/expenses";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -33,7 +39,7 @@ export function ExpenseFormModal({
   const [form, setForm] = useState<ExpenseInput>({
     id: editing?.id,
     expense_date: editing?.expense_date ?? today(),
-    category: editing?.category ?? "hay_feed",
+    category: expenseFormCategory(editing?.category) as ExpenseInput["category"],
     amount_cents: editing?.amount_cents ?? 0,
     vendor: editing?.vendor ?? "",
     herd_group_id: editing?.herd_group_id ?? null,
@@ -89,8 +95,14 @@ export function ExpenseFormModal({
         <div className={EF.feed}>
           <LabeledField label="Category *">
             <select className={sheetInputCls} value={form.category} onChange={(e) => set("category", e.target.value as ExpenseInput["category"])}>
-              {EXPENSE_CATEGORIES.map((c) => (
-                <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>
+              {/* A stored value this build does not know is shown (humanised)
+                  instead of silently swapping the select to a blank/first
+                  option — nothing stored is ever hidden from the user. */}
+              {!isExpenseCategory(form.category) && (
+                <option value={form.category}>{categoryLabel(form.category)}</option>
+              )}
+              {EXPENSE_CATEGORY_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
           </LabeledField>

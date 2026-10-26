@@ -16,6 +16,21 @@ mkdir -p .run
 # once node_modules is current.
 bun install
 bun run build
+
+# Deploy-time schema gate (audit defect D4). A build must not go live against a
+# database that is missing a migration it needs — that is exactly how the
+# owner's restock outage happened (0018 was never applied in production, and
+# nothing in the deploy path noticed until he tapped Save). READ-ONLY: it only
+# looks, and it follows the same database selection as the app. It runs here,
+# between the build and the server start, so a failed gate leaves the previous
+# release serving instead of putting a broken one live.
+# Emergency escape hatch, deliberately noisy: SKIP_SCHEMA_CHECK=1
+if [ "${SKIP_SCHEMA_CHECK:-0}" = "1" ]; then
+  echo "WARNING: SKIP_SCHEMA_CHECK=1 — the deploy-time schema gate is DISABLED for this release" >&2
+else
+  bun run db:check-schema
+fi
+
 setsid nohup bun run start > .run/server.log 2>&1 < /dev/null &
 
 # Wait for the new server to actually answer before reporting success, so a
