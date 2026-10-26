@@ -297,12 +297,18 @@ const computedFuelCents = (gallons: string, pricePerGal: string): number | null 
 
 export function LogFuelModal({
   equipment,
+  openKey,
   onClose,
   onSaved,
 }: {
   equipment: EquipmentItem[];
+  /** Which form-open this mount is (the parent's open counter, also its key).
+   *  Echoed back on onSaved so the parent can tell a CURRENT open's response
+   *  from a settled open's late deduped tail — the latter may show the honest
+   *  banner but must never close a newer, fresher form. */
+  openKey: number;
   onClose: () => void;
-  onSaved: (message: string) => void;
+  onSaved: (message: string, openKey?: number) => void;
 }) {
   const [form, setForm] = useState<FuelLogDraft>(emptyFuelDraft);
   const [saving, setSaving] = useState(false);
@@ -380,7 +386,7 @@ export function LogFuelModal({
     const res = await logFuel({ data: payload });
     if (res.ok) {
       clearDraft();
-      onSaved(fuelCreatedMessage(res).text);
+      onSaved(fuelCreatedMessage(res).text, openKey);
     } else {
       setSaving(false);
       setError(res.error);
@@ -532,12 +538,16 @@ const emptyServiceDraft = (): ServiceLogDraft => ({
 
 export function LogServiceModal({
   equipment,
+  openKey,
   onClose,
   onSaved,
 }: {
   equipment: EquipmentItem[];
+  /** Which form-open this mount is (the parent's open counter, also its key).
+   *  Echoed back on onSaved — see LogFuelModal. */
+  openKey: number;
   onClose: () => void;
-  onSaved: (message: string) => void;
+  onSaved: (message: string, openKey?: number) => void;
 }) {
   const [form, setForm] = useState<ServiceLogDraft>(emptyServiceDraft);
   const [saving, setSaving] = useState(false);
@@ -591,7 +601,7 @@ export function LogServiceModal({
     const res = await logMaintenance({ data: payload });
     if (res.ok) {
       clearDraft();
-      onSaved(serviceCreatedMessage(res).text);
+      onSaved(serviceCreatedMessage(res).text, openKey);
     } else {
       setSaving(false);
       setError(res.error);

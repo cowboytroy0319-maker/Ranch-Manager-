@@ -28,7 +28,9 @@ import {
   fuelVoidConfirmLines,
   fuelVoidedMessage,
   newTrackingRequestId,
+  nextFormOpenKey,
   parseCostToCents,
+  responseControlsSheet,
   serviceCreatedMessage,
   serviceEditedMessage,
   serviceSubmitLabel,
@@ -37,6 +39,53 @@ import {
   trackingFilterFromSearch,
   validateTrackingMoney,
 } from "./trackingUI";
+
+// The 2026-10-26 owner-directed fresh-state fix (pre-acceptance gate 1): a
+// genuinely new money entry must get a fresh form + a fresh client_request_id
+// WITHOUT a page reload, while retries of the same submission stay deduplicated.
+describe("form-open fresh state (fresh id per open, stable id while in flight)", () => {
+  test("fresh id per open — every mint differs; an id is never reused across opens", () => {
+    const ids = Array.from({ length: 5 }, () => newTrackingRequestId());
+    expect(new Set(ids).size).toBe(5);
+  });
+
+  test("stable id while in flight — retries of ONE open resend the SAME client_request_id", () => {
+    const key = newTrackingRequestId();
+    const first = buildFuelSubmit(
+      { equipment_id: 0, fuel_date: "2026-10-26", fuel_type: "diesel", gallons: 8, location: null, notes: null },
+      { clientRequestId: key, addExpense: true, costCents: 2000, kind: "purchase" }
+    );
+    const retry = buildFuelSubmit(
+      { equipment_id: 0, fuel_date: "2026-10-26", fuel_type: "diesel", gallons: 8, location: null, notes: null },
+      { clientRequestId: key, addExpense: true, costCents: 2000, kind: "purchase" }
+    );
+    expect(first.client_request_id).toBe(key);
+    expect(retry.client_request_id).toBe(key);
+  });
+
+  test("the NEXT open mints a different id — the settled one is never reused", () => {
+    const settled = newTrackingRequestId();
+    const next = buildFuelSubmit(
+      { equipment_id: 0, fuel_date: "2026-10-26", fuel_type: "diesel", gallons: 5, location: null, notes: null },
+      { clientRequestId: newTrackingRequestId(), addExpense: false, costCents: null, kind: "draw" }
+    );
+    expect(next.client_request_id).not.toBe(settled);
+  });
+
+  test("the open counter strictly increases so every open keys a fresh mount", () => {
+    const a = nextFormOpenKey(0);
+    const b = nextFormOpenKey(a);
+    expect(b).toBe(a + 1);
+    expect(nextFormOpenKey(b)).toBeGreaterThan(b);
+  });
+
+  test("responseControlsSheet — the current open controls the sheet; a settled open's late duplicate does not", () => {
+    expect(responseControlsSheet(3, 3)).toBe(true); // response of the open on screen
+    expect(responseControlsSheet(2, 3)).toBe(false); // stale tail after a newer open
+    expect(responseControlsSheet(4, 3)).toBe(false); // defensive: not the current open
+    expect(responseControlsSheet(undefined, 3)).toBe(true); // legacy caller keeps today's behavior
+  });
+});
 
 describe("tracking client_request_id (idempotency on double-submit)", () => {
   test("generates unique, non-empty keys", () => {

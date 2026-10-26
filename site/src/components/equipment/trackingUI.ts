@@ -18,6 +18,37 @@ export function newTrackingRequestId(): string {
 }
 
 // ---------------------------------------------------------------------------
+// THE FORM-OPEN CONTRACT (the 2026-10-26 owner-directed fresh-state fix).
+// One form-open = one mount = ONE client_request_id:
+//   • the PARENT bumps an open counter on EVERY open of the money modal (the
+//     sheet button and the ?add= deep link) and keys the modal with it — each
+//     open therefore remounts the modal and its lazy useState initializers
+//     mint a FRESH form and a FRESH client_request_id, even when the previous
+//     open's duplicate responses are still settling;
+//   • inside one open, every retry re-sends the SAME id (the double-tap
+//     dedupe — QA3B evidence) because the id is plain component state;
+//   • a settled open's LATE duplicate response may still show the honest
+//     banner and refresh the list, but it must never close or overwrite a
+//     NEWER open's fresh form — the parent checks responseControlsSheet.
+// Pure so both rules are assertable without a DOM.
+// ---------------------------------------------------------------------------
+
+/** The next modal-open counter value: strictly increasing, so every open keys
+ *  a brand-new mount (use as the setState updater: setSeq(nextFormOpenKey)). */
+export function nextFormOpenKey(n: number): number {
+  return n + 1;
+}
+
+/** Does a settled submit's response still own the sheet? Only a response from
+ *  the CURRENT form-open may close it (and clear its deep-link intent); a
+ *  response from an older, settled open — the deduped tail of a retry storm —
+ *  must not touch the sheet that a newer open now holds. */
+export function responseControlsSheet(responseOpenKey: number | undefined, currentOpenKey: number): boolean {
+  if (responseOpenKey === undefined) return true; // defensive: legacy caller keeps today's behavior
+  return responseOpenKey === currentOpenKey;
+}
+
+// ---------------------------------------------------------------------------
 // THE OWNER'S FORM CONTRACT (audit Phase 2 part 2). Do not reword.
 // ---------------------------------------------------------------------------
 

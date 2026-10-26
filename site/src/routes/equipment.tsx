@@ -1,7 +1,7 @@
 import { Link, createFileRoute, redirect, useRouter } from "@tanstack/react-router";
 import { getSession } from "~/server/auth";
 import { AppShell } from "~/components/AppShell";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Card, CardTitle, Stat } from "~/components/ui";
 import { TemplatesLink } from "~/components/TemplatesLink";
 import { useAddIntent } from "~/components/useAddIntent";
@@ -15,7 +15,7 @@ import {
   VoidFuelModal,
   VoidServiceModal,
 } from "~/components/equipment/TrackingModals";
-import { TRACKING_ADD_INTENTS, trackingFilterFromSearch } from "~/components/equipment/trackingUI";
+import { nextFormOpenKey, responseControlsSheet, TRACKING_ADD_INTENTS, trackingFilterFromSearch } from "~/components/equipment/trackingUI";
 import {
   CATEGORY_LABEL,
   assetStatus,
@@ -60,6 +60,17 @@ function EquipmentPage() {
   const [editing, setEditing] = useState<EquipmentItem | null>(null);
   const [fuelSheetOpen, setFuelSheetOpen] = useState(false);
   const [serviceSheetOpen, setServiceSheetOpen] = useState(false);
+  // The form-open counters (the 2026-10-26 owner-directed fresh-state fix):
+  // EVERY open — sheet button or ?add= deep link — bumps the counter and the
+  // modal is keyed by it, so each open is a fresh mount with a fresh form and
+  // a fresh client_request_id, and a settled open's late deduped response
+  // (the double-tap tail) can never close or overwrite a newer open.
+  const [fuelOpenSeq, setFuelOpenSeq] = useState(0);
+  const [serviceOpenSeq, setServiceOpenSeq] = useState(0);
+  const fuelOpenSeqRef = useRef(0);
+  fuelOpenSeqRef.current = fuelOpenSeq;
+  const serviceOpenSeqRef = useRef(0);
+  serviceOpenSeqRef.current = serviceOpenSeq;
   const [editingFuel, setEditingFuel] = useState<FuelEntry | null>(null);
   const [editingService, setEditingService] = useState<MaintenanceRecord | null>(null);
   const [voidingFuel, setVoidingFuel] = useState<FuelEntry | null>(null);
@@ -71,6 +82,12 @@ function EquipmentPage() {
   // ?add=service / ?add=fuel (MobileNav Quick Add) land straight on the
   // respective modal — the D7 deep-link fix, same wiring as /expenses.
   const { add, clear: clearAdd } = useAddIntent(TRACKING_ADD_INTENTS);
+  // A deep-link (?add=fuel / ?add=service) open is an OPEN: bump its counter
+  // so the keyed modal remounts fresh even if a sheet was already showing.
+  useEffect(() => {
+    if (add === "fuel") setFuelOpenSeq(nextFormOpenKey);
+    if (add === "service") setServiceOpenSeq(nextFormOpenKey);
+  }, [add]);
   const fuelOpen = fuelSheetOpen || add === "fuel";
   const serviceOpen = serviceSheetOpen || add === "service";
   const closeFuel = () => {
@@ -236,10 +253,10 @@ function EquipmentPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CardTitle title="Equipment & vehicles" sub="Fleet register with meter, condition, and service status" />
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => { setEditing(null); setFuelSheetOpen(true); }} className="btn-outline !px-4 !py-2 text-sm">
+            <button onClick={() => { setEditing(null); setFuelOpenSeq(nextFormOpenKey); setFuelSheetOpen(true); }} className="btn-outline !px-4 !py-2 text-sm">
               ⛽ + Log fuel
             </button>
-            <button onClick={() => { setEditing(null); setServiceSheetOpen(true); }} className="btn-outline !px-4 !py-2 text-sm">
+            <button onClick={() => { setEditing(null); setServiceOpenSeq(nextFormOpenKey); setServiceSheetOpen(true); }} className="btn-outline !px-4 !py-2 text-sm">
               🔧 + Add service
             </button>
             <button onClick={() => { setEditing(null); setAddOpen(true); }} className="btn-primary !px-4 !py-2 text-sm">
@@ -320,7 +337,7 @@ function EquipmentPage() {
           sub={`${data.fuel.length} refuels on record · latest first`}
           right={
             <div className="flex flex-wrap gap-2">
-              <button onClick={() => { setEditing(null); setFuelSheetOpen(true); }} className="btn-outline !px-3 !py-1.5 text-xs">
+              <button onClick={() => { setEditing(null); setFuelOpenSeq(nextFormOpenKey); setFuelSheetOpen(true); }} className="btn-outline !px-3 !py-1.5 text-xs">
                 ⛽ + Log fuel
               </button>
               <Badge tone="blue">{fuel.gallons.toLocaleString(undefined, { maximumFractionDigits: 0 })} gal total</Badge>
@@ -421,7 +438,7 @@ function EquipmentPage() {
           title="Service & maintenance"
           sub={`${data.maintenance.length} records · latest first`}
           right={
-            <button onClick={() => { setEditing(null); setServiceSheetOpen(true); }} className="btn-outline !px-3 !py-1.5 text-xs">
+            <button onClick={() => { setEditing(null); setServiceOpenSeq(nextFormOpenKey); setServiceSheetOpen(true); }} className="btn-outline !px-3 !py-1.5 text-xs">
               🔧 + Add service
             </button>
           }
@@ -538,16 +555,36 @@ function EquipmentPage() {
           its SAME linked expense, or remove both halves. */}
       {fuelOpen && (
         <LogFuelModal
+          key={`log-fuel-${fuelOpenSeq}`}
+          openKey={fuelOpenSeq}
           equipment={data.equipment}
           onClose={closeFuel}
-          onSaved={(message) => { setFuelSheetOpen(false); if (add === "fuel") clearAdd(); setTrackingMessage(message); refresh(); }}
+          onSaved={(message, responseKey) => {
+            // The current open's response closes the sheet; a settled open's
+            // late deduped tail only updates the banner + list.
+            if (responseControlsSheet(responseKey, fuelOpenSeqRef.current)) {
+              setFuelSheetOpen(false);
+              if (add === "fuel") clearAdd();
+            }
+            setTrackingMessage(message);
+            refresh();
+          }}
         />
       )}
       {serviceOpen && (
         <LogServiceModal
+          key={`log-service-${serviceOpenSeq}`}
+          openKey={serviceOpenSeq}
           equipment={data.equipment}
           onClose={closeService}
-          onSaved={(message) => { setServiceSheetOpen(false); if (add === "service") clearAdd(); setTrackingMessage(message); refresh(); }}
+          onSaved={(message, responseKey) => {
+            if (responseControlsSheet(responseKey, serviceOpenSeqRef.current)) {
+              setServiceSheetOpen(false);
+              if (add === "service") clearAdd();
+            }
+            setTrackingMessage(message);
+            refresh();
+          }}
         />
       )}
       {editingFuel && (
